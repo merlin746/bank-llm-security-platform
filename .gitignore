@@ -1,0 +1,41 @@
+# ---- Go (backend) ----
+backend/bin/
+*.exe
+*.test
+*.out
+coverage.out
+
+# ---- 环境变量与密钥（禁止提交） ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# ---- Node / Hardhat / Solidity (chain) ----
+node_modules/
+chain/artifacts/
+chain/cache/
+chain/coverage/
+chain/typechain-types/
+chain/.openzeppelin/
+
+# ---- IDE / 编辑器 ----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.swp
+
+# ---- 操作系统 ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ---- 日志 / 临时文件 ----
+*.log
+tmp/
+temp/

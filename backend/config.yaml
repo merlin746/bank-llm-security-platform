@@ -1,0 +1,27 @@
+ server:
+   port: 8080
+   mode: debug  # debug | release | test
+ 
+ redis:
+   addr: "localhost:6379"
+   password: ""
+   db: 0
+   policy_cache_ttl_seconds: 60
+ 
+ rabbitmq:
+   url: "amqp://guest:guest@localhost:5672/"
+   exchange: "chainwise.reconciliation"
+   queue: "node.hash.submit"
+   routing_key: "hash.submit"
+ 
+ fisco:
+   chain_id: 1
+   group_id: 1
+   node_endpoint: "http://localhost:8545"
+   access_control_contract: "0x0000000000000000000000000000000000000001"
+   compliance_policy_contract: "0x0000000000000000000000000000000000000002"
+   reconciliation_contract: "0x0000000000000000000000000000000000000003"
+ 
+ log:
+   level: "info"
+   file: "./logs/app.log"
