@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+torch
+transformers
+peft
+scikit-learn
+pandas
+numpy
+joblib
+spacy
+
+# 另需下载中文 NER 模型：
+# python -m spacy download zh_core_web_sm
