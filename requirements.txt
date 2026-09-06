@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+torch
+transformers
+peft
+datasets
+accelerate
+bitsandbytes
+scikit-learn
+pandas
+numpy
+joblib
+spacy
+sentence-transformers
