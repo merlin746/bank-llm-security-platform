@@ -6,13 +6,18 @@
  	"gopkg.in/yaml.v3"
  )
  
- type Config struct {
- 	Server    ServerConfig    `yaml:"server"`
- 	Redis     RedisConfig     `yaml:"redis"`
- 	RabbitMQ  RabbitMQConfig  `yaml:"rabbitmq"`
- 	Fisco     FiscoConfig     `yaml:"fisco"`
- 	Log       LogConfig       `yaml:"log"`
- }
+type Config struct {
+	Server    ServerConfig    `yaml:"server"`
+	Redis     RedisConfig     `yaml:"redis"`
+	RabbitMQ  RabbitMQConfig  `yaml:"rabbitmq"`
+	Fisco     FiscoConfig     `yaml:"fisco"`
+	AI        AIConfig        `yaml:"ai"`
+	Log       LogConfig       `yaml:"log"`
+}
+
+type AIConfig struct {
+	BaseURL string `yaml:"base_url"`
+}
  
  type ServerConfig struct {
  	Port int    `yaml:"port"`
@@ -64,9 +69,12 @@
  	if cfg.Server.Mode == "" {
  		cfg.Server.Mode = "debug"
  	}
- 	if cfg.Redis.PolicyCacheTTLSecs == 0 {
- 		cfg.Redis.PolicyCacheTTLSecs = 60
- 	}
- 
- 	return &cfg, nil
- }
+	if cfg.Redis.PolicyCacheTTLSecs == 0 {
+		cfg.Redis.PolicyCacheTTLSecs = 60
+	}
+	if cfg.AI.BaseURL == "" {
+		cfg.AI.BaseURL = "http://127.0.0.1:8000"
+	}
+
+	return &cfg, nil
+}

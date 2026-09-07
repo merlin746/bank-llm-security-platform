@@ -12,25 +12,28 @@
  	cacheClient          *cache.Cache
  	accessCtrlClient     *contract.AccessControlClient
  	complianceClient     *contract.CompliancePolicyClient
- 	reconClient          *contract.NodeReconciliationClient
- 	mqClient             *mq.MQClient
- }
- 
- func NewHandler(
- 	cacheClient *cache.Cache,
- 	accessCtrlClient *contract.AccessControlClient,
- 	complianceClient *contract.CompliancePolicyClient,
- 	reconClient *contract.NodeReconciliationClient,
- 	mqClient *mq.MQClient,
- ) *Handler {
- 	return &Handler{
- 		cacheClient:      cacheClient,
- 		accessCtrlClient: accessCtrlClient,
- 		complianceClient: complianceClient,
- 		reconClient:      reconClient,
- 		mqClient:         mqClient,
- 	}
- }
+	reconClient          *contract.NodeReconciliationClient
+	mqClient             *mq.MQClient
+	aiBaseURL            string
+}
+
+func NewHandler(
+	cacheClient *cache.Cache,
+	accessCtrlClient *contract.AccessControlClient,
+	complianceClient *contract.CompliancePolicyClient,
+	reconClient *contract.NodeReconciliationClient,
+	mqClient *mq.MQClient,
+	aiBaseURL string,
+) *Handler {
+	return &Handler{
+		cacheClient:      cacheClient,
+		accessCtrlClient: accessCtrlClient,
+		complianceClient: complianceClient,
+		reconClient:      reconClient,
+		mqClient:         mqClient,
+		aiBaseURL:        aiBaseURL,
+	}
+}
  
  func (h *Handler) RegisterRoutes(r *gin.Engine) {
  	api := r.Group("/api/v1")
@@ -55,10 +58,18 @@
  		}
  
  		// 策略管理
- 		policy := api.Group("/policy")
- 		{
- 			policy.GET("/active", h.GetActivePolicy)
- 			policy.GET("/rules", h.GetActiveRules)
- 		}
- 	}
- }
+		policy := api.Group("/policy")
+		{
+			policy.GET("/active", h.GetActivePolicy)
+			policy.GET("/rules", h.GetActiveRules)
+		}
+
+		// AI 服务代理（转发 FastAPI 微服务）
+		ai := api.Group("/ai")
+		{
+			ai.POST("/prompt/detect", h.AIDetectPrompt)
+			ai.POST("/output/desensitize", h.AIDesensitize)
+			ai.POST("/risk/score", h.AIRiskScore)
+		}
+	}
+}
