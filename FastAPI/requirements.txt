@@ -4,6 +4,9 @@ pydantic
 torch
 transformers
 peft
+datasets
+accelerate
+bitsandbytes
 scikit-learn
 pandas
 numpy

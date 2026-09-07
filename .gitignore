@@ -39,3 +39,8 @@ Desktop.ini
 *.log
 tmp/
 temp/
+
+# ---- FastAPI 模型产物 / 训练输出（不提交） ----
+FastAPI/adapters/
+FastAPI/models/
+FastAPI/output/
