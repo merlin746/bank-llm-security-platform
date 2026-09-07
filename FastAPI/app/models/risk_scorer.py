@@ -30,7 +30,7 @@ class RiskScorer:
     def extract_features(self, user_history: List[Dict]) -> np.ndarray:
         """
         从用户历史记录中提取特征
-        user_history: [{"timestamp": "2026-08-16 10:00:00", "type": "chat", "is_attack": False}, ...]
+        user_history: [{"timestamp": "2026-08-16 10:00:00", "type": "chat", "is_attack": False, "ip": "1.2.3.4"}, ...]
         """
         if not user_history:
             return np.zeros(len(self.feature_names))
@@ -64,15 +64,27 @@ class RiskScorer:
         else:
             attack_rate = 0
         
-        # 简化的特征：其他特征设为默认值
+        # 不同 IP 数量（若存在 ip 列）
+        if "ip" in df.columns:
+            unique_ip_count = df["ip"].nunique()
+        else:
+            unique_ip_count = 1  # 默认值
+
+        # 请求类型熵（若存在 type 列）
+        if "type" in df.columns:
+            type_counts = df["type"].value_counts(normalize=True)
+            entropy = -sum(p * np.log2(p) for p in type_counts if p > 0)
+        else:
+            entropy = 0.5  # 默认值
+
         features = np.array([
             call_count_1h,
             call_count_24h,
             night_rate,
             min(avg_interval, 3600),  # 上限1小时
-            1,  # unique_ip_count (简化)
+            unique_ip_count,
             attack_rate,
-            0.5  # request_type_entropy (简化)
+            entropy
         ])
         return features.reshape(1, -1)
     

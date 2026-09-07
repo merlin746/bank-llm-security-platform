@@ -1,19 +1,33 @@
 # prompt_detector.py
+import os
 import re
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 class PromptDetector:
     def __init__(self, base_model_path: str, adapter_path: str):
-        # 加载基座模型 + LoRA适配器
-        self.tokenizer = AutoTokenizer.from_pretrained(base_model_path)
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            base_model_path, 
-            num_labels=2  # 二分类: safe / attack
+        self.tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # 加载基座模型（因果 LM）
+        self.base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True,
         )
-        self.model = PeftModel.from_pretrained(self.model, adapter_path)
+        # 加载 LoRA 适配器（由 scripts/train_prompt_safety.py 生成）
+        self.model = PeftModel.from_pretrained(self.base_model, adapter_path)
         self.model.eval()
+
+        # 加载二分类头（训练脚本单独保存）
+        classifier_path = os.path.join(adapter_path, "classifier_head.pt")
+        hidden_size = self.base_model.config.hidden_size
+        self.classifier = torch.nn.Linear(hidden_size, 2, bias=False)
+        self.classifier.load_state_dict(torch.load(classifier_path, map_location="cpu"))
+        self.classifier.to(self.model.device)
+        self.classifier.eval()
         
         # 规则库：常见越狱/注入模式
         self.attack_patterns = [
@@ -35,9 +49,17 @@ class PromptDetector:
     def model_check(self, text: str) -> tuple[bool, float]:
         """模型层深度检测"""
         inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         with torch.no_grad():
-            outputs = self.model(**inputs)
-            probs = torch.softmax(outputs.logits, dim=-1)
+            outputs = self.model(**inputs, output_hidden_states=True)
+            hidden_states = outputs.hidden_states[-1]  # 最后一层
+            # 取最后一个有效 token（非 padding）
+            attention_mask = inputs["attention_mask"]
+            last_token_indices = attention_mask.sum(dim=1) - 1
+            batch_size = hidden_states.size(0)
+            last_hidden = hidden_states[torch.arange(batch_size), last_token_indices]
+            logits = self.classifier(last_hidden)
+            probs = torch.softmax(logits, dim=-1)
             attack_prob = probs[0][1].item()  # 攻击概率
         return attack_prob > 0.5, attack_prob
     
