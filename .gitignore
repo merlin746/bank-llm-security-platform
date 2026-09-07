@@ -44,3 +44,13 @@ temp/
 FastAPI/adapters/
 FastAPI/models/
 FastAPI/output/
+
+# ---- Python 虚拟环境 / Node 依赖 ----
+.venv/
+venv/
+node_modules/
+frontend/dist/
+
+# ---- Python 缓存 ----
+__pycache__/
+*.pyc
