@@ -60,13 +60,16 @@
  	complianceClient := contract.NewCompliancePolicyClient(&cfg.Fisco)
  	reconClient := contract.NewNodeReconciliationClient(&cfg.Fisco)
  
- 	// 预加载策略到 Redis 缓存
- 	if cacheClient != nil && complianceClient != nil {
- 		ctx := context.Background()
- 		if err := cacheClient.PreloadPolicies(ctx, complianceClient.GetPolicyForCache); err != nil {
- 			log.Printf("[WARN] policy preload failed: %v", err)
- 		} else {
- 			log.Println("[INFO] policies preloaded to cache")
+	// 预加载策略到 Redis 缓存
+	if cacheClient != nil && complianceClient != nil {
+		ctx := context.Background()
+		preloadFn := func() (interface{}, error) {
+			return complianceClient.GetPolicyForCache()
+		}
+		if err := cacheClient.PreloadPolicies(ctx, preloadFn); err != nil {
+			log.Printf("[WARN] policy preload failed: %v", err)
+		} else {
+			log.Println("[INFO] policies preloaded to cache")
  		}
  	}
  
@@ -81,10 +84,10 @@
  		}
  	}
  
- 	// 注册路由
- 	r := gin.Default()
- 	handler := api.NewHandler(cacheClient, accessCtrlClient, complianceClient, reconClient, mqClient)
- 	handler.RegisterRoutes(r)
+	// 注册路由
+	r := gin.Default()
+	handler := api.NewHandler(cacheClient, accessCtrlClient, complianceClient, reconClient, mqClient, cfg.AI.BaseURL)
+	handler.RegisterRoutes(r)
  
  	// 启动 HTTP 服务
  	srv := &http.Server{
