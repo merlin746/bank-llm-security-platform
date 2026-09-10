@@ -22,10 +22,10 @@ chain/cache/
 chain/coverage/
 chain/typechain-types/
 chain/.openzeppelin/
-chain-safe-frontend/dist/
+frontend/dist/
 
 # ---- 前端 Mock 开关（默认演示模式） ----
-!chain-safe-frontend/.env.development
+!frontend/.env.development
 
 # ---- IDE / 编辑器 ----
 .vscode/*
@@ -53,7 +53,6 @@ FastAPI/output/
 .venv/
 venv/
 node_modules/
-frontend/dist/
 
 # ---- Python 缓存 ----
 __pycache__/

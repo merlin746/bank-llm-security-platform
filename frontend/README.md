@@ -7,7 +7,7 @@
 ## 目录结构
 
 ```
-chain-safe-frontend/
+frontend/
 ├── index.html
 ├── vite.config.js            # dev 代理：/api → Go 后端 127.0.0.1:8080
 ├── .env.development          # VITE_USE_MOCK=true 时走前端 Mock，可独立演示
@@ -32,7 +32,7 @@ chain-safe-frontend/
 ## 快速开始
 
 ```bash
-cd chain-safe-frontend
+cd frontend
 npm install
 npm run dev
 ```
