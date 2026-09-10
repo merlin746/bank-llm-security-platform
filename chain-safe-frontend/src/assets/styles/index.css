@@ -1,0 +1,44 @@
+:root {
+  --brand: #1e6fff;
+  --brand-light: #e8f0ff;
+  --danger: #f56c6c;
+  --success: #67c23a;
+  --text-main: #303133;
+  --text-sub: #909399;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+  color: var(--text-main);
+  background: #f5f7fa;
+}
+
+/* 页面通用容器 */
+.page-container {
+  padding: 20px;
+}
+
+.page-title {
+  margin: 0 0 16px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* 卡片统一样式 */
+.card {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
