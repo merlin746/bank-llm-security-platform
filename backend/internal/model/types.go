@@ -125,16 +125,17 @@
  	Size  int         `json:"size"`
  }
  
- type APIResponse struct {
- 	Code    int         `json:"code"`
- 	Message string      `json:"message"`
- 	Data    interface{} `json:"data,omitempty"`
- }
- 
- func Success(data interface{}) APIResponse {
- 	return APIResponse{Code: 0, Message: "success", Data: data}
- }
- 
- func Error(code int, message string) APIResponse {
- 	return APIResponse{Code: code, Message: message}
- }
+type APIResponse struct {
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Msg     string      `json:"msg,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+}
+
+func Success(data interface{}) APIResponse {
+	return APIResponse{Code: 0, Message: "success", Msg: "ok", Data: data}
+}
+
+func Error(code int, message string) APIResponse {
+	return APIResponse{Code: code, Message: message, Msg: message}
+}

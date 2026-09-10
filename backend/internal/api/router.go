@@ -72,4 +72,18 @@ func NewHandler(
 			ai.POST("/risk/score", h.AIRiskScore)
 		}
 	}
+
+	// 成员2前端联调路由（vite proxy 传入 /api/... 前缀）
+	bridge := r.Group("/api")
+	{
+		bridge.POST("/auth/login", h.DemoLogin)
+		bridge.POST("/gateway/attack-test", h.DemoAttackTest)
+		bridge.POST("/gateway/access-test", h.DemoAccessTest)
+		bridge.GET("/stats/overview", h.DemoStatsOverview)
+		bridge.GET("/stats/trend", h.DemoStatsTrend)
+		bridge.GET("/stats/risk-distribution", h.DemoStatsRiskDistribution)
+		bridge.GET("/stats/high-risk-users", h.DemoStatsHighRiskUsers)
+		bridge.GET("/audit/topology", h.DemoAuditTopology)
+		bridge.GET("/audit/alerts", h.DemoAuditAlerts)
+	}
 }
