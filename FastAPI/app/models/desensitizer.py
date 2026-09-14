@@ -1,8 +1,8 @@
 # desensitizer.py
 """输出脱敏：正则掩码 + SpaCy NER + 违规话术合规检测。
 
-SpaCy 或其中文模型未安装时自动跳过 NER 层，保留正则与关键词合规检测，
-保证 Demo 环境也能启动服务。
+SpaCy 或其中文模型未安装时自动跳过 NER 层，保留正则与关键词合规检测。
+正则层对重叠实体做去重（长实体优先），NER 层带常见误报词黑名单。
 """
 
 import logging
@@ -73,7 +73,7 @@ class Desensitizer:
         return text[: span[0]] + masked + text[span[1] :]
 
     def regex_desensitize(self, text: str) -> Tuple[str, List[dict]]:
-        """正则层脱敏"""
+        """正则层脱敏（长实体优先，去除重叠实体）"""
         entities = []
         for entity_type, pattern in self.patterns.items():
             for match in pattern.finditer(text):
@@ -84,19 +84,36 @@ class Desensitizer:
                         "value": match.group(),
                     }
                 )
+
+        # 按 span 长度降序，长实体优先（身份证 > 银行卡等）
+        entities.sort(key=lambda x: (x["span"][1] - x["span"][0]), reverse=True)
+
+        # 去重：保留不与已选实体重叠的
+        filtered = []
+        for ent in entities:
+            overlap = any(
+                not (ent["span"][1] <= kept["span"][0] or ent["span"][0] >= kept["span"][1])
+                for kept in filtered
+            )
+            if not overlap:
+                filtered.append(ent)
+
         # 从后往前替换，避免偏移
-        for ent in sorted(entities, key=lambda x: x["span"][0], reverse=True):
+        for ent in sorted(filtered, key=lambda x: x["span"][0], reverse=True):
             text = self.mask_text(text, ent["type"], ent["span"])
-        return text, entities
+        return text, filtered
 
     def ner_desensitize(self, text: str) -> Tuple[str, List[dict]]:
         """NER 层脱敏（人名、机构等；模型未就绪时跳过）"""
         if self.nlp is None:
             return text, []
+
+        # 常见误报词黑名单
+        blacklist = {"手机号", "身份证", "银行卡", "密码", "账号", "姓名"}
         doc = self.nlp(text)
         entities = []
         for ent in doc.ents:
-            if ent.label_ in ["PERSON", "ORG", "GPE", "LOC"]:
+            if ent.label_ in ["PERSON", "ORG", "GPE", "LOC"] and ent.text not in blacklist:
                 entities.append(
                     {
                         "type": ent.label_,

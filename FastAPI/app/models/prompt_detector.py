@@ -1,8 +1,9 @@
 # prompt_detector.py
 """Prompt 攻击检测器。
 
-优先加载 Qwen2(LoRA) + 二分类头做语义检测；当深度学习依赖或模型产物缺失时
+优先加载 Qwen2(LoRA) + 二分类头做语义检测；深度学习依赖或模型产物缺失时
 自动降级为规则层，保证 Demo 环境（模型未训练）也能启动服务。
+推理默认 float32，CPU / GPU 均兼容（集成显卡环境亦可运行）。
 """
 
 import logging
@@ -31,9 +32,9 @@ class PromptDetector:
         self.tokenizer = None
         self.model_ready = False
 
-        # 规则库（后续可配置化）
+        # 规则库
         self.attack_patterns = [
-            r"(?i)(ignore|forget| disregard).*(previous|above|system)",
+            r"(?i)(ignore|forget|disregard).*(previous|above|system)",
             r"(?i)you are now (acting as|扮演)",
             r"(?i)jailbreak|越狱|突破限制",
             r"(?i)extract.*(password|secret|key|credential)",
@@ -49,36 +50,35 @@ class PromptDetector:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 base_model_path, trust_remote_code=True
             )
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
 
-            # 加载基座模型（因果 LM）
+            # float32：CPU / GPU 均兼容
             self.base_model = AutoModelForCausalLM.from_pretrained(
                 base_model_path,
-                torch_dtype=torch.float16,
-                device_map="auto",
+                torch_dtype=torch.float32,
                 trust_remote_code=True,
             )
             # 加载 LoRA 适配器（由 scripts/train_prompt_safety.py 生成）
             self.model = PeftModel.from_pretrained(self.base_model, adapter_path)
             self.model.eval()
 
-            # 加载二分类头（训练脚本单独保存）
+            # 加载二分类头（与训练脚本保存的结构一致）
             classifier_path = os.path.join(adapter_path, "classifier_head.pt")
             hidden_size = self.base_model.config.hidden_size
-            self.classifier = torch.nn.Linear(hidden_size, 2, bias=False)
+            self.classifier = torch.nn.Linear(hidden_size, 2)
             self.classifier.load_state_dict(torch.load(classifier_path, map_location="cpu"))
-            self.classifier.to(self.model.device)
             self.classifier.eval()
             self.model_ready = True
             logger.info("PromptDetector 模型层加载完成")
-        except Exception as exc:  # 模型文件缺失 / 显存不足等
+        except Exception as exc:  # 模型文件缺失 / 加载失败等
             self.model = None
             logger.warning("PromptDetector 模型层加载失败（%s），仅规则层可用", exc)
 
     def rule_check(self, text: str) -> tuple[bool, str]:
         """规则层快速检测"""
         for pattern in self.attack_patterns:
-            if re.search(pattern, text):
+            if re.search(pattern, text, re.IGNORECASE):
                 return True, f"命中规则: {pattern}"
         return False, ""
 
@@ -92,12 +92,11 @@ class PromptDetector:
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = self.model(**inputs, output_hidden_states=True)
-            hidden_states = outputs.hidden_states[-1]  # 最后一层
+            hidden = outputs.hidden_states[-1]  # 最后一层
             # 取最后一个有效 token（非 padding）
             attention_mask = inputs["attention_mask"]
-            last_token_indices = attention_mask.sum(dim=1) - 1
-            batch_size = hidden_states.size(0)
-            last_hidden = hidden_states[torch.arange(batch_size), last_token_indices]
+            last_idx = attention_mask.sum(dim=1) - 1
+            last_hidden = hidden[torch.arange(hidden.size(0)), last_idx]
             logits = self.classifier(last_hidden)
             probs = torch.softmax(logits, dim=-1)
             attack_prob = probs[0][1].item()  # 攻击概率
