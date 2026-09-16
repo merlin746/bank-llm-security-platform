@@ -22,6 +22,9 @@ chain/cache/
 chain/coverage/
 chain/typechain-types/
 chain/.openzeppelin/
+# ---- Foundry (chain 合约测试) ----
+chain/out/
+chain/broadcast/
 frontend/dist/
 
 # ---- 前端 Mock 开关（默认演示模式） ----
@@ -57,3 +60,6 @@ node_modules/
 # ---- Python 缓存 ----
 __pycache__/
 *.pyc
+
+# ---- 本地构建缓存（Go / 临时工作目录） ----
+.gocache/
