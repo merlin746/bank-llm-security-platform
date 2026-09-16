@@ -58,7 +58,32 @@ npm run dev
 | 高风险用户 | `GET /api/stats/high-risk-users` | 组员 B 网关 | - | `[{ name, role, riskScore, lastAction, level }]` |
 | 审计拓扑 | `GET /api/audit/topology` | 组员 A | - | `{ nodes[], edges[], chainStatus, alert }` |
 | 告警日志 | `GET /api/audit/alerts` | 组员 A | - | `[{ id, time, node, type, message }]` |
-| 用户/角色/数据分级 | `GET/POST/PUT/DELETE /api/users` 等 | 组员 B 后台 | - | 见 `src/api/admin.js` |
+| 用户列表 | `GET /api/users` | 组员 B 后台 | - | `[{ id, username, role, dataLevel }]` |
+| 用户详情 | `GET /api/users/:id` | 组员 B 后台 | - | `{ id, username, role, dataLevel }` |
+| 新增用户 | `POST /api/users` | 组员 B 后台 | `{ username, role, dataLevel, password? }` | 创建后的用户对象（`201`） |
+| 更新用户 | `PUT /api/users/:id` | 组员 B 后台 | `{ role?, dataLevel? }` | 更新后的用户对象 |
+| 删除用户 | `DELETE /api/users/:id` | 组员 B 后台 | - | `{ id, deleted }` |
+| 角色列表 | `GET /api/roles` | 组员 B 后台 | - | `[{ name, maxAccessLevel, chainRoleOrdinal }]` |
+| 数据分级 | `GET /api/data-levels` | 组员 B 后台 | - | `[{ level, desc, fields, rank }]` |
+
+> 后端共暴露 28 条路由（`/api/v1` 12 条 + `/api` 16 条）。完整字段说明、业务校验规则与错误码
+> 见 [docs/API接口规范文档.md](../docs/API接口规范文档.md)。
+
+### 业务后台接口的校验规则
+
+以下为后端已实现的业务校验，前端可据此做前置提示（但**以服务端校验为准**）：
+
+| 场景 | 结果 |
+| --- | --- |
+| 新增用户：用户名为空 / 角色非法 / 密级非法 | `400` |
+| 新增用户：**密级超出该角色可访问上限**（如"普通柜员"配 L4） | `400` |
+| 新增用户：用户名已存在 | `409` |
+| 更新用户：`role` 与 `dataLevel` 均未提供 | `400` |
+| 更新用户：更新后的角色-密级组合越权 | `400` |
+| 更新/删除用户：用户不存在 | `404` |
+| 删除用户：内置 `admin` 账号 | `403` |
+
+**角色可访问最高密级**：管理员 L4 · 风控审核员 L3 · 普通柜员 L2 · 客服坐席 L2 · 未识别角色 L1。
 
 ### 攻防测试 `stages[]` 结构（核心契约）
 
