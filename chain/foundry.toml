@@ -1,0 +1,10 @@
+[profile.default]
+src = "contracts"
+test = "test"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.34"
+optimizer = true
+optimizer_runs = 200
+# 纯测试工程，不在仓库内提交任何编译产物
+cache_path = "cache"
