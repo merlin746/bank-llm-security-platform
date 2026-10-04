@@ -10,6 +10,18 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     }
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('/node_modules/')) return
+          if (id.includes('/node_modules/echarts/')) return 'charts'
+          if (id.includes('/node_modules/zrender/')) return 'chart-renderer'
+          if (/\/node_modules\/(?:@vue|vue|vue-router|pinia)\//.test(id)) return 'vue'
+        }
+      }
+    }
+  },
   server: {
     port: 5173,
     // 所有 /api 请求代理到 Go 后端安全网关（组员 B 后端，内部再转组员 A 的 Redis / 组员 C 的 AI 服务）

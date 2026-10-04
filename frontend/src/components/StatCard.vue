@@ -1,50 +1,26 @@
 <template>
-  <div class="stat-card">
-    <div class="stat-icon" :style="{ background: bg }">
-      <el-icon :size="26" color="#fff"><component :is="icon" /></el-icon>
-    </div>
-    <div class="stat-body">
-      <div class="stat-value">{{ value }}</div>
-      <div class="stat-label">{{ label }}</div>
-    </div>
+  <div class="stat-card" :class="'tone-' + tone">
+    <div class="stat-label">{{ label }}</div>
+    <div class="stat-value data-number">{{ value }}</div>
+    <div class="stat-caption">{{ caption }}</div>
   </div>
 </template>
 
 <script setup>
 defineProps({
-  icon: { type: String, required: true }, // 图标组件名（已在 main.js 全局注册）
-  bg: { type: String, default: '#1e6fff' },
   value: { type: [String, Number], required: true },
-  label: { type: String, required: true }
+  label: { type: String, required: true },
+  caption: { type: String, default: '' },
+  tone: { type: String, default: 'neutral' }
 })
 </script>
 
 <style scoped>
-.stat-card {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 20px;
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-}
-.stat-icon {
-  width: 52px;
-  height: 52px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.stat-value {
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1;
-}
-.stat-label {
-  font-size: 13px;
-  color: #909399;
-  margin-top: 6px;
-}
+.stat-card { padding: 24px 26px; min-width: 0; }
+.stat-label { color: var(--text-sub); font-size: 13px; font-weight: 500; }
+.stat-value { font-size: 32px; font-weight: 600; line-height: 1.4; letter-spacing: -0.03em; margin-top: 10px; }
+.stat-caption { color: var(--text-sub); font-size: 11px; margin-top: 8px; }
+.tone-brand .stat-value { color: var(--brand); }
+.tone-danger .stat-value { color: var(--danger); }
+@media (max-width: 640px) { .stat-card { padding: 20px 16px; } .stat-value { font-size: 27px; } }
 </style>

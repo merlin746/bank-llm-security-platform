@@ -1,5 +1,5 @@
 import request from './request'
-import { useMock, mockTopology, mockAlerts } from '@/mock'
+import { useMock, mockTopology, mockAlerts, mockAlertDetail, mockRequestDetail, mockAuditRequests } from '@/mock'
 
 /**
  * 审计溯源对账拓扑（组员 A 提供）
@@ -26,4 +26,19 @@ export function getTopology() {
 export function getAlerts() {
   if (useMock()) return mockAlerts()
   return request.get('/audit/alerts')
+}
+
+export function getAlertDetail(id) {
+  if (useMock()) return mockAlertDetail(id)
+  return request.get(`/audit/alerts/${encodeURIComponent(id)}`)
+}
+
+export function getRequestDetail(requestId) {
+  if (useMock()) return mockRequestDetail(requestId)
+  return request.get(`/audit/requests/${encodeURIComponent(requestId)}`)
+}
+
+export function getAuditRequests() {
+  if (useMock()) return mockAuditRequests()
+  return request.get('/audit/requests')
 }

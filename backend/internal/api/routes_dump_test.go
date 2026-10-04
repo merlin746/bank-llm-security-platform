@@ -9,7 +9,7 @@ import (
 //
 // 该断言的价值：新增或删减接口时会立即失败，提醒同步更新
 // 《API 接口规范文档》(docs/API接口规范文档.md)，避免文档与代码漂移。
-const expectedRouteCount = 28
+const expectedRouteCount = 40
 
 // TestRouteInventoryMatchesSpec 断言路由总数，并输出完整清单便于人工核对。
 //

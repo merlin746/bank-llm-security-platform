@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -24,11 +25,15 @@ func init() {
 // （见 cmd/server/main.go 与各 handler 中的 nil 判断），这正好让测试无需任何
 // 中间件即可覆盖路由注册与 handler 逻辑。
 func newTestEngine(t *testing.T) *gin.Engine {
+	return newTestEngineWithAI(t, "http://127.0.0.1:1")
+}
+
+func newTestEngineWithAI(t *testing.T, aiURL string) *gin.Engine {
 	t.Helper()
 
 	demoUsers.reset()
 
-	h := NewHandler(nil, nil, nil, nil, (*mq.MQClient)(nil), "http://127.0.0.1:8000")
+	h := NewHandler(nil, nil, nil, nil, (*mq.MQClient)(nil), aiURL)
 	r := gin.New()
 	h.RegisterRoutes(r)
 	return r
@@ -49,6 +54,33 @@ func doRequest(
 	method, path string,
 	body interface{},
 ) (*httptest.ResponseRecorder, apiResponse) {
+	token := ""
+	if path != "/api/auth/login" && path != "/api/v1/health" {
+		account := "reviewer"
+		if strings.HasPrefix(path, "/api/users") || path == "/api/roles" || path == "/api/data-levels" || strings.HasPrefix(path, "/api/system/") || strings.HasPrefix(path, "/api/v1/permission/") || strings.HasPrefix(path, "/api/v1/policy/") {
+			account = "admin"
+		}
+		if path == "/api/audit/topology" || strings.HasPrefix(path, "/api/v1/audit/") {
+			account = "auditor"
+		}
+		if method == http.MethodPost && path == "/api/business/requests" {
+			account = "teller"
+		}
+		token = loginToken(t, r, account)
+	}
+	return doRequestWithToken(t, r, method, path, body, token)
+}
+
+func loginToken(t *testing.T, r *gin.Engine, account string) string {
+	t.Helper()
+	w, response := doRequestWithToken(t, r, http.MethodPost, "/api/auth/login", map[string]string{"username": account, "password": account}, "")
+	assertSuccess(t, w, response)
+	var login demoLoginResponse
+	decodeData(t, response, &login)
+	return login.Token
+}
+
+func doRequestWithToken(t *testing.T, r *gin.Engine, method, path string, body interface{}, token string) (*httptest.ResponseRecorder, apiResponse) {
 	t.Helper()
 
 	var reader *bytes.Reader
@@ -63,6 +95,9 @@ func doRequest(
 	}
 
 	req := httptest.NewRequest(method, path, reader)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -120,6 +155,13 @@ func doRequestRaw(
 
 	req := httptest.NewRequest(method, path, bytes.NewReader([]byte(rawBody)))
 	req.Header.Set("Content-Type", "application/json")
+	if path != "/api/auth/login" {
+		account := "reviewer"
+		if strings.HasPrefix(path, "/api/users") {
+			account = "admin"
+		}
+		req.Header.Set("Authorization", "Bearer "+loginToken(t, r, account))
+	}
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

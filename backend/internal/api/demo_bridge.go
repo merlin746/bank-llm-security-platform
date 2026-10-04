@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,7 +15,7 @@ import (
 	"github.com/chainwise/backend/internal/model"
 )
 
-const aiCallTimeout = 15 * time.Second
+const aiCallTimeout = 4 * time.Second
 
 // demoStage 与成员2前端 PipelineStages 的 stages[] 结构保持一致
 type demoStage struct {
@@ -38,12 +40,15 @@ func (h *Handler) callAI(path string, payload map[string]interface{}) (map[strin
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: aiCallTimeout}
+	client := &http.Client{Timeout: time.Duration(h.settings.snapshot().Runtime.AITimeoutMs) * time.Millisecond}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("AI 服务返回异常状态（HTTP %d）", resp.StatusCode)
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -51,7 +56,10 @@ func (h *Handler) callAI(path string, payload map[string]interface{}) (map[strin
 	}
 	var out map[string]interface{}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, err
+		return nil, errors.New("AI 服务返回无效的检测响应")
+	}
+	if _, ok := out["is_attack"].(bool); !ok {
+		return nil, errors.New("AI 服务未返回有效的攻击判定")
 	}
 	return out, nil
 }
@@ -63,32 +71,54 @@ func strOr(v interface{}) string {
 	return ""
 }
 
-// DemoLogin 登录（演示：任意账号密码签发 token）
+// DemoLogin 校验演示账号凭据，返回账号当前的角色与密级。
 func (h *Handler) DemoLogin(c *gin.Context) {
 	var req struct {
 		Username string `json:"username"`
+		Password string `json:"password"`
 	}
-	_ = c.ShouldBindJSON(&req)
-	if req.Username == "" {
-		req.Username = "demo"
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.Error(400, "请输入账号和密码"))
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" || strings.TrimSpace(req.Password) == "" {
+		c.JSON(http.StatusBadRequest, model.Error(400, "请输入账号和密码"))
+		return
+	}
+	u, valid := demoUsers.authenticate(req.Username, req.Password)
+	if !valid {
+		c.JSON(http.StatusUnauthorized, model.Error(401, "账号或密码错误"))
+		return
+	}
+	token, err := h.sessions.issue(u.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.Error(500, "暂时无法创建登录状态"))
+		return
 	}
 	c.JSON(http.StatusOK, model.Success(gin.H{
-		"token": fmt.Sprintf("demo-token-%d", time.Now().UnixNano()),
-		"user": gin.H{
-			"username":  req.Username,
-			"role":      "风控审核员",
-			"dataLevel": "L3",
-		},
+		"token": token,
+		"user":  u,
 	}))
 }
 
 // DemoAttackTest Prompt 注入攻防测试：真实调用 FastAPI 输入检测
 func (h *Handler) DemoAttackTest(c *gin.Context) {
+	user := currentUser(c)
+	if !canReadData(user, user.Username, businessDepartment(user), user.DataLevel) {
+		c.JSON(http.StatusForbidden, model.Error(403, "当前账号没有业务数据授权范围"))
+		return
+	}
 	var req struct {
-		Prompt string `json:"prompt"`
+		Prompt string `json:"prompt" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.Error(400, "invalid request"))
+		return
+	}
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Prompt == "" {
+		c.JSON(http.StatusBadRequest, model.Error(400, "prompt is required"))
 		return
 	}
 
@@ -97,24 +127,7 @@ func (h *Handler) DemoAttackTest(c *gin.Context) {
 		{Key: "auth", Name: "身份认证", Owner: "B", Status: "pass", LatencyMs: 1, Message: "Token 校验通过"},
 	}
 
-	blocked := false
-	message := "未检测到注入/越狱意图"
-	extra := map[string]interface{}{"riskScore": 12, "riskType": "normal"}
-	if result, err := h.callAI("/api/prompt/detect", map[string]interface{}{"text": req.Prompt}); err == nil {
-		if isAttack, ok := result["is_attack"].(bool); ok && isAttack {
-			blocked = true
-			message = "检测到越狱/注入意图：" + strOr(result["reason"])
-			extra = map[string]interface{}{
-				"confidence": result["confidence"],
-				"riskScore":  90,
-				"riskType":   "jailbreak",
-			}
-		} else if conf, ok := result["confidence"].(float64); ok {
-			extra["confidence"] = conf
-		}
-	} else {
-		message = "AI 服务未就绪，按规则层判定"
-	}
+	blocked, message, extra, detection := h.detectDemoPrompt(req.Prompt)
 
 	inputStatus := "pass"
 	if blocked {
@@ -127,7 +140,7 @@ func (h *Handler) DemoAttackTest(c *gin.Context) {
 	})
 	stages = append(stages, demoStage{
 		Key: "access-control", Name: "权限/密级校验", Owner: "A",
-		Status: "pass", LatencyMs: 2, Message: "角色/密级/频次校验通过（Redis 缓存）",
+		Status: "pass", LatencyMs: 2, Message: "本地演示账号、数据密级与授权部门校验通过",
 	})
 
 	if blocked {
@@ -150,20 +163,32 @@ func (h *Handler) DemoAttackTest(c *gin.Context) {
 	for _, s := range stages {
 		total += s.LatencyMs
 	}
-	c.JSON(http.StatusOK, model.Success(gin.H{
-		"requestId":      fmt.Sprintf("req-%d", time.Now().UnixNano()%100000),
-		"prompt":         req.Prompt,
-		"verdict":        verdict,
-		"totalLatencyMs": total,
-		"stages":         stages,
-	}))
+	result := demoRequest{
+		RequestID: newDemoRequestID(), Kind: "attack", Time: demoTimestamp(start),
+		Owner: user.Username, Department: businessDepartment(user), Role: user.Role, DataLevel: user.DataLevel,
+		Prompt: req.Prompt, Verdict: verdict, TotalLatencyMs: total,
+		Stages: stages, Detection: detection, AlertIDs: []int{},
+	}
+	var alert *demoAlert
+	if blocked {
+		alert = &demoAlert{Node: "访问节点", Type: "jailbreak", Message: message,
+			Severity: "high", Status: "blocked", Evidence: fmt.Sprintf("输入：%s；检测依据：%s；风险评分：%v/100", req.Prompt, message, extra["riskScore"]),
+			Recommendation: "核查请求来源与输入内容，保留拦截记录；确认安全后再发起新请求。"}
+	}
+	h.demoAudit.record(&result, alert)
+	c.JSON(http.StatusOK, model.Success(result))
 }
 
 // DemoAccessTest 越权访问攻防测试
 func (h *Handler) DemoAccessTest(c *gin.Context) {
+	user := currentUser(c)
+	if !canReadData(user, user.Username, businessDepartment(user), user.DataLevel) {
+		c.JSON(http.StatusForbidden, model.Error(403, "当前账号没有业务数据授权范围"))
+		return
+	}
 	var req struct {
 		Role      string `json:"role"`
-		DataLevel string `json:"dataLevel"`
+		DataLevel string `json:"dataLevel" binding:"required,oneof=L1 L2 L3 L4"`
 		Action    string `json:"action"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -171,23 +196,25 @@ func (h *Handler) DemoAccessTest(c *gin.Context) {
 		return
 	}
 
-	roleLevel := map[string]string{"普通柜员": "L2", "客服坐席": "L2", "风控审核员": "L3", "管理员": "L4"}
-	allowed := roleLevel[req.Role]
-	if allowed == "" {
-		allowed = "L1"
+	allowedRank := levelRank(user.DataLevel)
+	if req.Role != "" && req.Role != user.Role {
+		c.JSON(http.StatusForbidden, model.Error(403, "请求角色必须与当前登录账号一致"))
+		return
 	}
-	canAccess := allowed >= req.DataLevel
+	allowed := fmt.Sprintf("L%d", allowedRank)
+	canAccess := allowedRank >= levelRank(req.DataLevel)
 
+	detection := demoDetection{Source: "gateway-rules", Mode: "rules", Reason: "本次执行角色与密级规则校验，未执行 Prompt 检测"}
 	stages := []demoStage{
 		{Key: "auth", Name: "身份认证", Owner: "B", Status: "pass", LatencyMs: 1, Message: "Token 校验通过"},
-		{Key: "input-risk", Name: "AI 输入风险检测", Owner: "C", Status: "pass", LatencyMs: 8, Message: "未检测到注入/越狱意图"},
+		{Key: "input-risk", Name: "AI 输入风险检测", Owner: "C", Status: "skip", Message: "本次为权限测试，未提交 Prompt"},
 	}
 	accessStatus := "pass"
-	accessMsg := "角色/密级/频次校验通过（Redis 缓存）"
-	accessExtra := map[string]interface{}{"requestedLevel": req.DataLevel, "allowedLevel": allowed}
+	accessMsg := "当前账号的客户密级校验通过（本地演示授权）"
+	accessExtra := map[string]interface{}{"requestedLevel": req.DataLevel, "allowedLevel": allowed, "detection": detection, "simulatedRole": req.Role}
 	if !canAccess {
 		accessStatus = "block"
-		accessMsg = fmt.Sprintf("角色 [%s] 无权访问密级 [%s] 数据", req.Role, req.DataLevel)
+		accessMsg = fmt.Sprintf("账号 [%s] 的有效客户密级 [%s] 不允许访问 [%s] 数据", user.Username, allowed, req.DataLevel)
 	}
 	stages = append(stages, demoStage{
 		Key: "access-control", Name: "权限/密级校验", Owner: "A",
@@ -213,62 +240,34 @@ func (h *Handler) DemoAccessTest(c *gin.Context) {
 	for _, s := range stages {
 		total += s.LatencyMs
 	}
-	c.JSON(http.StatusOK, model.Success(gin.H{
-		"requestId":      fmt.Sprintf("req-%d", time.Now().UnixNano()%100000),
-		"role":           req.Role,
-		"dataLevel":      req.DataLevel,
-		"action":         req.Action,
-		"verdict":        verdict,
-		"totalLatencyMs": total,
-		"stages":         stages,
-	}))
-}
-
-// DemoStatsOverview 安全态势总览 KPI
-func (h *Handler) DemoStatsOverview(c *gin.Context) {
-	c.JSON(http.StatusOK, model.Success(gin.H{
-		"totalRequests": 12894,
-		"blockedToday":  321,
-		"blockRate":     2.49,
-		"highRiskUsers": 7,
-	}))
-}
-
-// DemoStatsTrend 拦截量趋势（演示序列）
-func (h *Handler) DemoStatsTrend(c *gin.Context) {
-	hours := []string{"00:00", "04:00", "08:00", "12:00", "16:00", "20:00", "24:00"}
-	blocked := []int{40, 22, 68, 95, 71, 52, 31}
-	passed := []int{800, 620, 1500, 2300, 1900, 1400, 900}
-	items := make([]gin.H, 0, len(hours))
-	for i := range hours {
-		items = append(items, gin.H{"time": hours[i], "blocked": blocked[i], "passed": passed[i]})
+	result := demoRequest{
+		RequestID: newDemoRequestID(), Kind: "access", Time: demoTimestamp(time.Now()),
+		Owner: user.Username, Department: businessDepartment(user), Role: user.Role, DataLevel: user.DataLevel, RequestedLevel: req.DataLevel, Action: req.Action,
+		Verdict: verdict, TotalLatencyMs: total, Stages: stages, Detection: detection, AlertIDs: []int{},
 	}
-	c.JSON(http.StatusOK, model.Success(items))
-}
-
-// DemoStatsRiskDistribution 风险类型分布（演示）
-func (h *Handler) DemoStatsRiskDistribution(c *gin.Context) {
-	c.JSON(http.StatusOK, model.Success([]gin.H{
-		{"type": "Prompt 注入", "value": 128},
-		{"type": "越权访问", "value": 96},
-		{"type": "敏感数据泄露", "value": 54},
-		{"type": "违规承诺", "value": 28},
-		{"type": "频次异常", "value": 15},
-	}))
-}
-
-// DemoStatsHighRiskUsers 高风险用户榜单（演示）
-func (h *Handler) DemoStatsHighRiskUsers(c *gin.Context) {
-	c.JSON(http.StatusOK, model.Success([]gin.H{
-		{"name": "u_200731", "role": "普通柜员", "riskScore": 96, "lastAction": "越权查询密级 L4", "level": "高"},
-		{"name": "u_100288", "role": "风控审核员", "riskScore": 87, "lastAction": "高频 Prompt 注入尝试", "level": "高"},
-		{"name": "u_301445", "role": "客服坐席", "riskScore": 74, "lastAction": "导出敏感字段", "level": "中"},
-		{"name": "u_400912", "role": "普通柜员", "riskScore": 68, "lastAction": "异常时段访问", "level": "中"},
-	}))
+	var alert *demoAlert
+	if !canAccess {
+		alert = &demoAlert{Node: "访问节点", Type: "privilege", Message: accessMsg,
+			Severity: "high", Status: "blocked",
+			Evidence:       fmt.Sprintf("账号：%s；职责：%s；有效客户密级：%s；请求密级：%s；操作：%s", user.Username, user.Role, allowed, req.DataLevel, req.Action),
+			Recommendation: "核实用户职责与数据授权，按审批流程申请权限后重新发起请求。"}
+	}
+	h.demoAudit.record(&result, alert)
+	c.JSON(http.StatusOK, model.Success(result))
 }
 
 // DemoAuditTopology 审计溯源四节点拓扑
 func (h *Handler) DemoAuditTopology(c *gin.Context) {
+	h.demoAudit.mu.RLock()
+	evidence, exists := h.demoAudit.alerts[1]
+	h.demoAudit.mu.RUnlock()
+	if !exists || !canReadAlert(currentUser(c), evidence) {
+		c.JSON(http.StatusOK, model.Success(gin.H{
+			"nodes": []gin.H{}, "edges": []gin.H{}, "chainStatus": "unavailable",
+			"alert": "当前账号的密级或业务范围未获此演示拓扑证据授权",
+		}))
+		return
+	}
 	c.JSON(http.StatusOK, model.Success(gin.H{
 		"nodes": []gin.H{
 			{"id": "access", "name": "访问节点", "hash": "0x3a9f21c4e8b7", "status": "normal", "x": 80, "y": 200},
@@ -288,9 +287,5 @@ func (h *Handler) DemoAuditTopology(c *gin.Context) {
 
 // DemoAuditAlerts 告警日志列表
 func (h *Handler) DemoAuditAlerts(c *gin.Context) {
-	c.JSON(http.StatusOK, model.Success([]gin.H{
-		{"id": 1, "time": "2026-08-29 14:32:11", "node": "RAG 检索节点", "type": "hash-mismatch", "message": "节点 Hash 与链上不一致"},
-		{"id": 2, "time": "2026-08-29 13:05:44", "node": "访问节点", "type": "privilege", "message": "越权访问密级 L4 数据被拦截"},
-		{"id": 3, "time": "2026-08-29 11:20:03", "node": "推理节点", "type": "jailbreak", "message": "检测到 Prompt 越狱意图"},
-	}))
+	c.JSON(http.StatusOK, model.Success(h.demoAudit.visibleAlerts(currentUser(c))))
 }

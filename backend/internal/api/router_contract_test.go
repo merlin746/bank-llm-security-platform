@@ -30,6 +30,8 @@ var frontendContractRoutes = []struct {
 	{"GET", "/api/stats/high-risk-users", "stats.js"},
 	{"GET", "/api/audit/topology", "audit.js"},
 	{"GET", "/api/audit/alerts", "audit.js"},
+	{"GET", "/api/audit/alerts/:id", "audit.js"},
+	{"GET", "/api/audit/requests/:requestId", "audit.js"},
 	{"GET", "/api/users", "admin.js"},
 	{"POST", "/api/users", "admin.js"},
 	{"PUT", "/api/users/:id", "admin.js"},
