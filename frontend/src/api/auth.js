@@ -1,5 +1,5 @@
 import request from './request'
-import { useMock, mockLogin } from '@/mock'
+import { useMock, mockLogin, mockCurrentUser, mockLogout } from '@/mock'
 
 /**
  * 用户登录（组员 B 业务后台）
@@ -16,7 +16,12 @@ export function login(payload) {
  * 退出登录
  * POST /api/auth/logout
  */
-export function logout() {
-  if (useMock()) return Promise.resolve({ code: 0, msg: 'ok' })
-  return request.post('/auth/logout')
+export function logout(token) {
+  if (useMock()) return mockLogout(token)
+  return request.post('/auth/logout', null, { headers: { Authorization: `Bearer ${token}` } })
+}
+
+export function currentUser() {
+  if (useMock()) return mockCurrentUser()
+  return request.get('/auth/me')
 }

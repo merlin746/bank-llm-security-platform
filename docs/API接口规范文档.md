@@ -18,7 +18,7 @@
 | 请求体格式 | `application/json; charset=utf-8` |
 | 响应体格式 | `application/json; charset=utf-8` |
 | 字符编码 | UTF-8 |
-| 认证方式 | 请求头 `Authorization: Bearer <token>`（演示阶段为占位令牌） |
+| 认证方式 | 请求头 `Authorization: Bearer <token>`，令牌由账号密码认证后签发并校验会话 |
 | 时间格式 | 秒级 Unix 时间戳（链上字段）；`YYYY-MM-DD HH:mm:ss`（展示字段） |
 
 ### 1.2 路由分层说明
@@ -75,7 +75,11 @@
 
 ### 1.5 路由总览
 
-共 28 条路由：`/api/v1` 12 条，`/api` 16 条。
+共 40 条路由：`/api/v1` 12 条，`/api` 28 条。除登录与健康检查外，均要求有效会话及对应操作权限。
+
+角色仅决定操作权限，数据记录还须同时满足账号 `dataLevel`、`scope.departments` 和 `scope.ownerOnly`。系统管理员没有客户业务读取权限，即使其账号为 L4 也不能查看客户记录。
+
+**本地实现边界**：下文保留 `/api/v1` 的链上目标契约。当前全局链上桩接口 `/audit/stats`、`/audit/requests`（含详情）、`/audit/anomalies`、`/permission/users/:address`、`/permission/check-access`、`/policy/active` 与 `/policy/rules` 尚未按客户范围校验，已认证调用当前返回 `403`，不会返回全局客户数据。健康检查正常开放，AI 接口要求 `simulation.run` 并受演示测试开关控制。
 
 ---
 
@@ -306,6 +310,9 @@
 | `confidence` | float | 置信度（0–1）；规则层命中时为 `1.0` |
 | `reason` | string | 判定依据（规则层会给出命中的正则） |
 | `layer` | string | 命中的检测层：`rule` / `model` |
+| `detection_mode` | string | 本次实际使用的检测模式：`rules` / `model` |
+| `degraded` | bool | 本次语义模型是否不可用（即使规则命中也会返回真实降级状态） |
+| `degradation_reason` | string | 依赖缺失、模型未就绪、加载或推理失败的说明；未降级时为空 |
 
 ---
 
@@ -383,19 +390,42 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `username` | string | 否 | 用户名，缺省为 `demo` |
-| `password` | string | 否 | 演示阶段不校验 |
+| `username` | string | 是 | 用户名，去除首尾空白后查找用户存储 |
+| `password` | string | 是 | 与存储的密码精确匹配，保留首尾空白 |
 
 **响应 `data`**
 
 ```jsonc
 {
-  "token": "demo-token-1700000000000000000",
-  "user": { "username": "admin", "role": "风控审核员", "dataLevel": "L3" }
+  "token": "<随机会话令牌>",
+  "user": {
+    "id": 1, "username": "admin", "role": "系统管理员", "dataLevel": "L4",
+    "department": "平台运维部", "permissions": ["admin.manage"],
+    "scope": { "departments": [], "ownerOnly": false }
+  }
 }
 ```
 
-> **实现说明**：演示接口，任意账号密码均可登录并签发占位令牌。接入真实认证后此接口需替换为基于链上地址签名的挑战-响应认证。
+内置演示账号如下，密码均与英文账号同名。账号或密码缺失返回 `400`，未知账号或密码错误统一返回 `401` / `账号或密码错误`。
+
+| 账号 | 角色 | 默认密级 | 默认业务范围 |
+| --- | --- | --- | --- |
+| `teller` | 柜员／客服 | L1 | 所属零售业务部，且仅限本人业务 |
+| `reviewer` | 风控审核员 | L3 | 所属零售业务部 |
+| `auditor` | 审计人员 | L2 | 零售与信贷业务部，只读审计 |
+| `admin` | 系统管理员 | L4 | 空业务范围，仅管理配置 |
+
+这些是账号默认授权，四个角色都可独立配置 L1–L4。职责、密级、部门范围与本人限制分别计算；客户端提交 `role` 或 `scope` 不会改变会话身份。用户对象与后续 `/auth/me` 都返回 `id`、`username`、`role`、`dataLevel`、`department`、`permissions`、`scope`，不返回密码。
+
+Go 后端签发随机令牌，会话保存在进程内存，8 小时后过期，进程重启后失效；每次请求重新读取账号以执行当前角色、密级及范围校验。Mock 令牌及账号保存在标签页的会话存储；权限修改会撤销该账号的旧会话，需重新登录。两种模式均拒绝不存在或已注销的令牌，Go 另校验会话到期时间。
+
+#### `GET /api/auth/me`
+
+要求有效 Bearer 令牌，返回 `{ "user": <当前用户对象> }`；无效会话返回 `401`。前端导航时以此接口恢复身份。
+
+#### `POST /api/auth/logout`
+
+撤销请求头中的当前会话令牌。后端返回 `{ "loggedOut": true }`；Mock 返回成功信封，前端同时清理本地身份。已撤销令牌不能再次使用。
 
 ---
 
@@ -404,6 +434,8 @@
 #### `POST /api/gateway/attack-test`
 
 Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测接口；AI 服务不可用时降级为规则层判定，保证演示不中断。
+
+要求 `simulation.run`、有效业务范围及启用的 `policy.allowGatewayTests`，当前仅风控审核员具备此操作；系统管理员不自动获得测试权限。
 
 **请求体**
 
@@ -416,10 +448,25 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `requestId` | string | 本次测试的请求 ID |
+| `kind` | string | 请求类型：`attack` / `access` |
+| `time` | string | 请求发生时间，`YYYY-MM-DD HH:mm:ss`，北京时间 |
+| `alertIds` | int[] | 关联告警编号；未产生告警时为空数组 |
+| `detection` | object | 检测来源、模式、降级状态与原因，见下表 |
 | `prompt` | string | 回显提示词 |
 | `verdict` | string | 最终裁决：`pass` / `block` |
 | `totalLatencyMs` | int | 各阶段耗时之和 |
 | `stages` | object[] | 拦截管道各阶段结果，见 [3.4](#34-拦截管道阶段契约核心) |
+
+**`detection`**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `source` | string | `ai-service` / `gateway-rules` / `mock` |
+| `mode` | string | `rules` / `model` / `mock` / `unknown` |
+| `degraded` | bool | 语义检测能力是否降低 |
+| `reason` | string | 降级或检测能力说明 |
+
+AI 调用超过 `runtime.aiTimeoutMs`（默认 4000 毫秒）、不可达、返回非 2xx 或无效结果时，网关执行中英文备用规则，返回 `gateway-rules` / `rules` / `degraded: true`。AI 已降级时保留其降级原因。规则放行只代表未命中规则，不代表语义模型完成检测。
 
 ---
 
@@ -431,25 +478,19 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `role` | string | 是 | 角色中文名：`普通柜员` / `客服坐席` / `风控审核员` / `管理员` |
+| `role` | string | 否 | 只能与当前登录角色一致；其他角色返回 `403`，省略时取会话角色 |
 | `dataLevel` | string | 是 | 请求访问的密级：`L1`–`L4` |
 | `action` | string | 否 | 操作描述，如"查询 / 导出" |
 
-**角色-密级映射**
+**密级判定**：使用已认证账号的实际 `dataLevel`，不通过角色名称推导授权密级。客户端请求密级超过账号密级时返回拦截裁决；测试不读取目标密级的客户数据。
 
-| 角色 | 可访问最高密级 |
-| --- | --- |
-| 管理员 | L4 |
-| 风控审核员 | L3 |
-| 普通柜员 | L2 |
-| 客服坐席 | L2 |
-| *（未识别角色）* | L1 |
-
-**响应 `data`**：同 `attack-test`，另含 `role` / `dataLevel` / `action` 回显。
+**响应 `data`**：同 `attack-test`，另含 `role`、`action`、`requestedLevel`（测试目标密级）和 `dataLevel`（记录自身密级）。记录还含已认证账号的 `owner` 与 `department`，便于在授权范围内关联查看。
 
 ---
 
 ### 3.3 安全态势
+
+以下接口要求 `dashboard.read`，所有统计只包含当前账号密级与业务范围内的请求和告警。
 
 #### `GET /api/stats/overview`
 
@@ -550,6 +591,8 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 
 四节点指纹连贯性拓扑，审计溯源页主图数据源。
 
+要求 `audit.read`，节点与对账结果只依据当前授权业务记录生成。审计页面仅提供刷新、查看与证据复制，不执行风险复核或配置修改。
+
 **响应 `data`**
 
 | 字段 | 类型 | 说明 |
@@ -584,6 +627,16 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 | `node` | string | 节点展示名 |
 | `type` | string | `hash-mismatch` / `privilege` / `jailbreak` |
 | `message` | string | 告警内容 |
+| `severity` | string | 严重程度：`high` 等 |
+| `status` | string | 处置状态：`open` / `blocked` 等 |
+| `requestId` | string | 关联请求编号；历史演示记录未保存原始请求时为空 |
+| `evidence` | string | 检测依据与命中信息 |
+| `recommendation` | string | 处置建议 |
+| `detection` | object | 告警对应请求的检测来源及降级状态 |
+| `owner` / `department` / `dataLevel` | string | 记录所有者、业务组织与数据密级 |
+| `review` | object | 已保存时包含 `{ decision, note, reviewer, time }` |
+
+告警列表与详情要求 `alerts.read`，并按密级、业务部门和本人范围过滤。
 
 **`type` 与前端标签映射**
 
@@ -595,7 +648,23 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 
 ---
 
+#### `GET /api/audit/alerts/:id`
+
+返回单条授权告警，字段与告警列表对象一致。不存在或已过期返回 `404`，超出范围返回 `403`。
+
+#### `GET /api/audit/requests`
+
+返回当前授权请求数组，要求 `audit.read` 或 `alerts.read`；记录包含 `requestId`、`owner`、`department`、`dataLevel`、`kind`、`time`、处理结果与关联告警。
+
+#### `GET /api/audit/requests/:requestId`
+
+返回授权业务或攻防请求的完整结果，包含 `requestId`、`owner`、`department`、`dataLevel`、`kind`、`time`、原始输入（`prompt` 或 `role` / `requestedLevel` / `action`）、`verdict`、`totalLatencyMs`、`stages`、`detection` 与 `alertIds`。要求 `audit.read`、`alerts.read` 或 `simulation.run`，并校验记录范围；不存在或已过期返回 `404`，超出授权范围返回 `403`。
+
+前端联调请求与告警在 Go 进程内存中关联保存，最多保留 500 个请求，关联告警随请求淘汰，进程重启后清空。此接口与 `/api/v1/audit/requests/:requestId` 的链上对账详情分别服务于网关测试记录与链上审计。
+
 ### 3.6 业务后台 — 用户管理
+
+本节全部接口要求 `admin.manage`，不会授予客户数据查看权限。
 
 #### `GET /api/users`
 
@@ -607,6 +676,9 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 | `username` | string | 用户名 |
 | `role` | string | 角色中文名 |
 | `dataLevel` | string | 密级 `L1`–`L4` |
+| `department` | string | 所属业务部门；系统管理员为平台运维部 |
+| `permissions` | string[] | 该角色允许的操作，如 `business.read`、`risk.review`、`admin.manage` |
+| `scope` | object | `{ departments: string[], ownerOnly: bool }`，限定记录范围 |
 
 > **安全约束**：响应中**永不包含**密码字段。
 
@@ -631,7 +703,9 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 | `username` | string | 是 | 用户名，去除首尾空白后不得为空 |
 | `role` | string | 是 | 角色中文名，取值见 [3.7](#37-业务后台--角色与数据分级) |
 | `dataLevel` | string | 是 | 密级 `L1`–`L4` |
-| `password` | string | 否 | 演示阶段仅存储，不参与任何响应 |
+| `password` | string | 前端必填 | 用于后续登录，不参与任何响应；后端兼容省略，创建后的空密码账号不能登录 |
+| `department` | string | 否 | 零售业务部或信贷业务部；系统管理员为平台运维部；省略时使用角色默认部门 |
+| `scope` | object | 否 | 业务范围；省略时使用角色与部门的默认范围，可提供合法子集以收窄 |
 
 **业务校验**
 
@@ -640,7 +714,8 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 | 用户名为空 | `400` |
 | 角色非法 | `400` |
 | 密级非法 | `400` |
-| **密级超出该角色可访问上限** | `400` |
+| 部门非法或范围不符合角色职责 | `400` |
+| 柜员／客服取消 `ownerOnly` 本人限制 | `400` |
 | 用户名已存在 | `409` |
 
 **成功响应**：`201` + 创建后的用户对象。
@@ -649,33 +724,36 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 
 ```jsonc
 // 请求
-{ "username": "audit_01", "role": "风控审核员", "dataLevel": "L3", "password": "secret" }
+{ "username": "jane", "role": "风控审核员", "dataLevel": "L3", "password": "secret", "department": "零售业务部", "scope": { "departments": ["零售业务部"], "ownerOnly": false } }
 
 // 响应 201
-{ "code": 0, "msg": "ok", "data": { "id": 4, "username": "audit_01", "role": "风控审核员", "dataLevel": "L3" } }
+{ "code": 0, "msg": "ok", "data": { "id": 5, "username": "jane", "role": "风控审核员", "dataLevel": "L3", "department": "零售业务部", "permissions": ["business.read", "dashboard.read", "alerts.read", "risk.review", "simulation.run"], "scope": { "departments": ["零售业务部"], "ownerOnly": false } } }
 ```
 
 ---
 
 #### `PUT /api/users/:id`
 
-**请求体**（`role` 与 `dataLevel` 至少提供其一）
+**请求体**（至少提供一个可更新字段，账号名称不可修改）
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `role` | string | 否 | 新角色 |
 | `dataLevel` | string | 否 | 新密级 |
+| `department` | string | 否 | 新业务部门 |
+| `scope` | object | 否 | 新业务范围；更新角色或部门时，未传范围则使用新职责默认范围 |
 
 **业务校验**
 
 | 校验 | 失败返回 |
 | --- | --- |
-| 两者均为空 | `400` |
+| 所有可更新字段均未提供 | `400` |
 | 角色或密级非法 | `400` |
-| 更新后的角色-密级组合越权 | `400` |
+| 更新后的部门或业务范围不符合职责 | `400` |
 | 用户不存在 | `404` |
+| 修改内置 `admin` | `403` |
 
-> **注意**：「角色-密级组合越权」的校验基于**更新后的组合**：若只改角色而不改密级，仍会校验新角色能否覆盖原有密级。
+四个角色均允许独立配置 L1–L4；提高账号密级不会增加操作权限或授权部门。柜员／客服范围只能为所属部门且 `ownerOnly: true`；风控审核员只能授权所属部门；审计人员可选择零售/信贷业务部子集；系统管理员只能为空业务范围。
 
 ---
 
@@ -707,17 +785,28 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `name` | string | 角色中文名 |
-| `maxAccessLevel` | string | 该角色可访问的最高密级 |
+| `maxAccessLevel` | string | 可配置的密级边界，四角色均为 L4；实际数据访问以账号密级与范围为准 |
 | `chainRoleOrdinal` | int | 对应链上 `Role` 枚举序号 |
+| `permissions` | string[] | 角色操作权限 |
+| `scope` | object | 该角色默认业务范围，与账号密级独立 |
 
 **当前取值**
 
 | `name` | `maxAccessLevel` | `chainRoleOrdinal` |
 | --- | --- | --- |
-| 管理员 | L4 | 4（ADMIN） |
-| 风控审核员 | L3 | 3（MANAGER） |
-| 普通柜员 | L2 | 2（OPERATOR） |
-| 客服坐席 | L2 | 2（OPERATOR） |
+| 系统管理员 | L4 | 4（ADMIN） |
+| 风控审核员 | L4 | 3（MANAGER） |
+| 柜员／客服 | L4 | 2（OPERATOR） |
+| 审计人员 | L4 | 1（AUDITOR） |
+
+角色与分级接口均要求 `admin.manage`；角色定义以只读方式展示，账号管理可选择对应角色。
+
+| 角色 | `permissions` |
+| --- | --- |
+| 柜员／客服 | `business.read`、`business.submit` |
+| 风控审核员 | `business.read`、`dashboard.read`、`alerts.read`、`risk.review`、`simulation.run` |
+| 审计人员 | `business.read`、`alerts.read`、`audit.read` |
+| 系统管理员 | `admin.manage` |
 
 ---
 
@@ -740,6 +829,56 @@ Prompt 注入 / 越狱攻击模拟。网关会**真实调用** AI 输入检测�
 | L2 | 内部数据 | 基础客户信息 | 2 |
 | L3 | 敏感数据 | 账户余额、交易明细 | 3 |
 | L4 | 高度敏感 | 身份证、卡号、征信 | 4 |
+
+---
+
+### 3.8 授权业务工作台
+
+#### `GET /api/business/requests`
+
+要求 `business.read`，返回当前授权的业务请求数组。柜员／客服仅返回本人记录；风控和审计账号按密级及业务部门范围过滤。`GET /api/business/requests/:requestId` 返回单个授权业务记录，`GET /api/workspace/requests` 为授权记录兼容入口。
+
+#### `POST /api/business/requests`
+
+要求 `business.submit`，当前仅柜员／客服可提交。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `prompt` | string | 是 | 非空业务内容 |
+| `dataLevel` | string | 否 | 业务密级 L1–L4，省略为 L1，不能超过账号授权 |
+| `businessType` | string | 否 | 业务类型，如产品与服务咨询 |
+| `action` | string | 否 | 操作描述 |
+
+`owner`、角色与业务组织由已认证账号确定，客户端不能伪造。响应为请求对象，含 `result`、`riskTip`、`status`、`verdict`、`requestId`、`alertIds` 及检测记录。未发现风险返回处理结果，命中风险返回拦截结果及提示；记录始终按密级、组织及本人限制授权。
+
+### 3.9 风险复核
+
+#### `POST /api/risk/reviews`
+
+要求 `risk.review`，仅风控审核员可在授权告警范围内操作；审计人员保持只读。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `alertId` | int | 是 | 已存在的授权告警编号 |
+| `decision` | string | 是 | `confirmed`（确认风险）或 `dismissed`（排除风险） |
+| `note` | string | 是 | 非空复核依据，不超过 1000 字 |
+
+返回更新后的告警，`review` 包含 `{ decision, note, reviewer, time }`，`status` 更新为该复核结论。复核仅保存风险判断，不解除拦截、不提升权限。非法参数返回 `400`，越权返回 `403`，不存在返回 `404`，已复核返回 `409`。
+
+### 3.10 策略与运行配置
+
+#### `GET /api/system/settings` / `PUT /api/system/settings`
+
+两者均要求 `admin.manage`。GET 返回当前配置；PUT 至少提供一个已知字段，并返回保存后的配置：
+
+```json
+{
+  "policy": { "allowGatewayTests": true },
+  "runtime": { "aiTimeoutMs": 4000 }
+}
+```
+
+`allowGatewayTests` 为布尔值；关闭后 `/api/gateway/**` 与 `/api/v1/ai/**` 的新测试请求返回 `403`。`aiTimeoutMs` 为 500–8000 毫秒整数，控制后续 AI 检测等待时间；超时执行备用规则并显式标注降级。空请求、非法超时值或非布尔开关返回 `400`。当前演示配置保存在 Go 进程内存或 Mock 标签页会话中。
 
 ---
 
@@ -820,6 +959,7 @@ nodeHash = SHA-256(
 | --- | --- |
 | `0` | 成功 |
 | `400` | 请求参数错误 |
+| `401` | 会话缺失、失效或已撤销 |
 | `403` | 操作被拒绝 |
 | `404` | 资源不存在 |
 | `409` | 资源冲突 |
@@ -835,7 +975,7 @@ nodeHash = SHA-256(
 3. **再改代码**：实现变更后运行 `go test ./internal/api/...`；
 4. **通知消费方**：涉及字段增删改时须通知前端/链下消费方。
 
-> `TestRouteInventoryMatchesSpec` 会断言路由总数（当前 28 条）。新增或删除接口时该测试会失败，属预期行为——请同步更新 `expectedRouteCount` 与本文档。
+> `TestRouteInventoryMatchesSpec` 会断言路由总数（当前 40 条）。新增或删除接口时该测试会失败，属预期行为——请同步更新 `expectedRouteCount` 与本文档。
 
 ---
 

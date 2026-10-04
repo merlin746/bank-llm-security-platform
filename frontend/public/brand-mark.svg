@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <symbol id="chainwise-mark" viewBox="0 0 48 48">
+    <path fill="var(--mark-primary, #2463d4)" d="M24 3 9 9 3 23 9 36 21 45v-8l-7-6-4-8 4-9 10-4Z"/>
+    <path fill="var(--mark-secondary, #548dc4)" d="m24 3 15 6 6 14-6 13-12 9v-8l7-6 4-8-4-9-10-4Z"/>
+    <path stroke="var(--mark-primary, #2463d4)" stroke-width="3.5" stroke-linejoin="round" d="m17 24 5-5h7l3 5-5 5h-7Z"/>
+  </symbol>
+  <use href="#chainwise-mark"/>
+</svg>

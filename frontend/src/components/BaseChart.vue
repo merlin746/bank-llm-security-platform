@@ -1,39 +1,47 @@
 <template>
-  <div ref="chartRef" :style="{ width: '100%', height }"></div>
+  <div ref="chartRef" class="base-chart" role="img" :aria-label="label" :style="{ width: '100%', height }"></div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import * as echarts from 'echarts'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import * as echarts from 'echarts/core'
+import { LineChart, PieChart, GraphChart } from 'echarts/charts'
+import { AriaComponent, TooltipComponent, LegendComponent, GridComponent, TitleComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+
+echarts.use([LineChart, PieChart, GraphChart, AriaComponent, TooltipComponent, LegendComponent, GridComponent, TitleComponent, CanvasRenderer])
 
 const props = defineProps({
   option: { type: Object, required: true },
-  height: { type: String, default: '320px' }
+  height: { type: String, default: '320px' },
+  label: { type: String, required: true }
 })
-
 const chartRef = ref(null)
-let chart = null
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+let chart
+let observer
 
 function render() {
-  if (!chartRef.value) return
-  if (!chart) chart = echarts.init(chartRef.value)
-  chart.setOption(props.option, true)
-}
-
-function resize() {
-  chart && chart.resize()
+  if (!chartRef.value || !chart) return
+  chart.setOption({ ...props.option, animation: !reducedMotion.matches, animationDuration: 250, animationDurationUpdate: 200 }, { notMerge: true })
 }
 
 onMounted(() => {
-  nextTick(render)
-  window.addEventListener('resize', resize)
+  chart = echarts.init(chartRef.value)
+  render()
+  observer = new ResizeObserver(() => chart?.resize())
+  observer.observe(chartRef.value)
+  reducedMotion.addEventListener('change', render)
 })
-
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resize)
-  chart && chart.dispose()
+  observer?.disconnect()
+  reducedMotion.removeEventListener('change', render)
+  chart?.dispose()
   chart = null
 })
-
-watch(() => props.option, render, { deep: true })
+watch(() => props.option, render)
 </script>
+
+<style scoped>
+.base-chart { min-width: 0; }
+</style>

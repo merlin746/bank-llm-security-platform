@@ -1,5 +1,8 @@
 import request from './request'
-import { useMock, mockUsers, mockRoles, mockDataLevels } from '@/mock'
+import {
+  useMock, mockUsers, mockRoles, mockDataLevels, mockUserDetail,
+  mockCreateUser, mockUpdateUser, mockDeleteUser
+} from '@/mock'
 
 /**
  * 业务后台 CRUD（组员 B）：用户 / 角色 / 数据分级配置
@@ -12,18 +15,26 @@ export function getUsers() {
   return request.get('/users')
 }
 
+export function getUserDetail(id) {
+  if (useMock()) return mockUserDetail(id)
+  return request.get(`/users/${id}`)
+}
+
 // 新增用户 POST /api/users
 export function createUser(data) {
+  if (useMock()) return mockCreateUser(data)
   return request.post('/users', data)
 }
 
 // 更新用户 PUT /api/users/:id
 export function updateUser(id, data) {
+  if (useMock()) return mockUpdateUser(id, data)
   return request.put(`/users/${id}`, data)
 }
 
 // 删除用户 DELETE /api/users/:id
 export function deleteUser(id) {
+  if (useMock()) return mockDeleteUser(id)
   return request.delete(`/users/${id}`)
 }
 

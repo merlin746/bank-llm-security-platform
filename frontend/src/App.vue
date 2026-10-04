@@ -1,7 +1,7 @@
 <template>
-  <router-view />
+  <el-config-provider :locale="zhCn"><router-view /></el-config-provider>
 </template>
 
 <script setup>
-// 根组件：仅作为路由出口
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 </script>

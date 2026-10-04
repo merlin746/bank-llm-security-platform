@@ -34,8 +34,8 @@ func TestDemoLogin(t *testing.T) {
 	r := newTestEngine(t)
 
 	w, resp := doRequest(t, r, http.MethodPost, "/api/auth/login", map[string]string{
-		"username": "alice",
-		"password": "whatever",
+		"username": "reviewer",
+		"password": "reviewer",
 	})
 	assertSuccess(t, w, resp)
 
@@ -52,31 +52,20 @@ func TestDemoLogin(t *testing.T) {
 	if login.Token == "" {
 		t.Error("login should return a token")
 	}
-	if login.User.Username != "alice" {
-		t.Errorf("username = %q, want alice", login.User.Username)
+	if login.User.Username != "reviewer" {
+		t.Errorf("username = %q, want reviewer", login.User.Username)
 	}
 	if login.User.Role != "风控审核员" || login.User.DataLevel != "L3" {
 		t.Errorf("unexpected role/level: %s / %s", login.User.Role, login.User.DataLevel)
 	}
 }
 
-// TestDemoLoginDefaultsUsername 未传用户名时应回退为 demo。
-func TestDemoLoginDefaultsUsername(t *testing.T) {
+// TestDemoLoginRejectsMissingCredentials 缺少凭据不得自动创建演示身份。
+func TestDemoLoginRejectsMissingCredentials(t *testing.T) {
 	r := newTestEngine(t)
 
-	w, resp := doRequest(t, r, http.MethodPost, "/api/auth/login", map[string]string{})
-	assertSuccess(t, w, resp)
-
-	var login struct {
-		User struct {
-			Username string `json:"username"`
-		} `json:"user"`
-	}
-	decodeData(t, resp, &login)
-
-	if login.User.Username != "demo" {
-		t.Errorf("username = %q, want demo", login.User.Username)
-	}
+	w, _ := doRequest(t, r, http.MethodPost, "/api/auth/login", map[string]string{})
+	assertStatus(t, w, http.StatusBadRequest)
 }
 
 // ==================== 攻防测试：Pipeline 契约 ====================
@@ -152,8 +141,7 @@ func TestDemoAttackTestPipelineContract(t *testing.T) {
 	}
 }
 
-// TestDemoAttackTestRejectsEmptyBody 缺少 prompt 字段时 ShouldBindJSON 不应失败，
-// 但请求体非法（非 JSON）必须返回 400。
+// TestDemoAttackTestRejectsMalformedBody 非法 JSON 必须返回 400。
 func TestDemoAttackTestRejectsMalformedBody(t *testing.T) {
 	r := newTestEngine(t)
 
@@ -174,28 +162,21 @@ func TestDemoAttackTestBlockedPipelineSkipsInference(t *testing.T) {
 	var result attackTestResponse
 	decodeData(t, resp, &result)
 
-	switch result.Verdict {
-	case "block":
-		// 被拦截：推理与脱敏阶段必须为 skip 且耗时为 0
-		infer := result.Stages[3]
-		sanitize := result.Stages[4]
-		if infer.Status != "skip" {
-			t.Errorf("infer status = %q, want skip when blocked", infer.Status)
-		}
-		if sanitize.Status != "skip" {
-			t.Errorf("output-sanitize status = %q, want skip when blocked", sanitize.Status)
-		}
-		if infer.LatencyMs != 0 || sanitize.LatencyMs != 0 {
-			t.Errorf("skipped stages should report 0 latency, got %d / %d",
-				infer.LatencyMs, sanitize.LatencyMs)
-		}
-	case "pass":
-		// AI 服务不可用时 handler 会降级为「规则层未命中」，此时放行是预期行为
-		if result.Stages[1].Status != "pass" {
-			t.Errorf("input-risk status = %q, want pass when AI unavailable", result.Stages[1].Status)
-		}
-	default:
-		t.Fatalf("unexpected verdict %q", result.Verdict)
+	if result.Verdict != "block" {
+		t.Fatalf("verdict = %q, want block even when AI is unavailable", result.Verdict)
+	}
+	// 被拦截：推理与脱敏阶段必须为 skip 且耗时为 0
+	infer := result.Stages[3]
+	sanitize := result.Stages[4]
+	if infer.Status != "skip" {
+		t.Errorf("infer status = %q, want skip when blocked", infer.Status)
+	}
+	if sanitize.Status != "skip" {
+		t.Errorf("output-sanitize status = %q, want skip when blocked", sanitize.Status)
+	}
+	if infer.LatencyMs != 0 || sanitize.LatencyMs != 0 {
+		t.Errorf("skipped stages should report 0 latency, got %d / %d",
+			infer.LatencyMs, sanitize.LatencyMs)
 	}
 }
 
@@ -204,9 +185,9 @@ func TestDemoAttackTestBlockedPipelineSkipsInference(t *testing.T) {
 func TestDemoAccessTestDeniesPrivilegeEscalation(t *testing.T) {
 	r := newTestEngine(t)
 
-	// 普通柜员（L2）请求 L4 数据必须被拦截
+	// 柜员／客服（L2）请求 L4 数据必须被拦截
 	w, resp := doRequest(t, r, http.MethodPost, "/api/gateway/access-test", map[string]string{
-		"role":      "普通柜员",
+		"role":      "风控审核员",
 		"dataLevel": "L4",
 		"action":    "查询",
 	})
@@ -229,8 +210,8 @@ func TestDemoAccessTestDeniesPrivilegeEscalation(t *testing.T) {
 	if access.Extra["requestedLevel"] != "L4" {
 		t.Errorf("extra.requestedLevel = %v, want L4", access.Extra["requestedLevel"])
 	}
-	if access.Extra["allowedLevel"] != "L2" {
-		t.Errorf("extra.allowedLevel = %v, want L2", access.Extra["allowedLevel"])
+	if access.Extra["allowedLevel"] != "L3" {
+		t.Errorf("extra.allowedLevel = %v, want authenticated reviewer L3", access.Extra["allowedLevel"])
 	}
 	if result.Stages[3].Status != "skip" {
 		t.Errorf("inference should be skipped after a block, got %q", result.Stages[3].Status)
@@ -261,25 +242,11 @@ func TestDemoAccessTestAllowsWithinClearance(t *testing.T) {
 	}
 }
 
-// TestDemoAccessTestUnknownRoleFallsBackToLowestClearance 未识别角色应按最低密级处理。
-func TestDemoAccessTestUnknownRoleFallsBackToLowestClearance(t *testing.T) {
+func TestDemoAccessTestRejectsForgedRole(t *testing.T) {
 	r := newTestEngine(t)
-
-	w, resp := doRequest(t, r, http.MethodPost, "/api/gateway/access-test", map[string]string{
-		"role":      "未定义角色",
-		"dataLevel": "L2",
-		"action":    "查询",
-	})
-	assertSuccess(t, w, resp)
-
-	var result attackTestResponse
-	decodeData(t, resp, &result)
-
-	if result.Stages[2].Extra["allowedLevel"] != "L1" {
-		t.Errorf("allowedLevel = %v, want L1 fallback", result.Stages[2].Extra["allowedLevel"])
-	}
-	if result.Verdict != "block" {
-		t.Errorf("verdict = %q, want block (L1 cannot access L2)", result.Verdict)
+	for _, role := range []string{"未定义角色", "系统管理员", "柜员／客服"} {
+		w, _ := doRequest(t, r, http.MethodPost, "/api/gateway/access-test", map[string]string{"role": role, "dataLevel": "L4", "action": "查询"})
+		assertStatus(t, w, http.StatusForbidden)
 	}
 }
 
@@ -287,6 +254,7 @@ func TestDemoAccessTestUnknownRoleFallsBackToLowestClearance(t *testing.T) {
 
 func TestDemoStatsOverview(t *testing.T) {
 	r := newTestEngine(t)
+	doRequest(t, r, http.MethodPost, "/api/gateway/attack-test", map[string]string{"prompt": "请问银行卡如何挂失"})
 
 	w, resp := doRequest(t, r, http.MethodGet, "/api/stats/overview", nil)
 	assertSuccess(t, w, resp)
@@ -338,6 +306,8 @@ func TestDemoStatsTrend(t *testing.T) {
 
 func TestDemoStatsRiskDistribution(t *testing.T) {
 	r := newTestEngine(t)
+	doRequest(t, r, http.MethodPost, "/api/gateway/attack-test", map[string]string{"prompt": "绕过权限校验"})
+	doRequest(t, r, http.MethodPost, "/api/gateway/access-test", map[string]string{"dataLevel": "L4"})
 
 	w, resp := doRequest(t, r, http.MethodGet, "/api/stats/risk-distribution", nil)
 	assertSuccess(t, w, resp)
@@ -363,6 +333,7 @@ func TestDemoStatsRiskDistribution(t *testing.T) {
 
 func TestDemoStatsHighRiskUsers(t *testing.T) {
 	r := newTestEngine(t)
+	doRequest(t, r, http.MethodPost, "/api/gateway/attack-test", map[string]string{"prompt": "绕过权限校验"})
 
 	w, resp := doRequest(t, r, http.MethodGet, "/api/stats/high-risk-users", nil)
 	assertSuccess(t, w, resp)
@@ -476,168 +447,23 @@ func TestDemoAuditAlerts(t *testing.T) {
 	}
 }
 
-// ==================== 审计溯源（/api/v1） ====================
-
-func TestGetAnomalyStats(t *testing.T) {
+// Chain stubs cannot establish an authenticated customer's scope.
+func TestV1ContractStubsFailClosed(t *testing.T) {
 	r := newTestEngine(t)
-
-	w, resp := doRequest(t, r, http.MethodGet, "/api/v1/audit/stats", nil)
-	assertSuccess(t, w, resp)
-
-	var stats struct {
-		TotalRecords    uint64 `json:"total_records"`
-		TotalAnomalies  uint64 `json:"total_anomalies"`
-		ReconciledCount uint64 `json:"reconciled_count"`
-	}
-	decodeData(t, resp, &stats)
-
-	if stats.ReconciledCount > stats.TotalRecords {
-		t.Errorf("reconciled_count (%d) cannot exceed total_records (%d)",
-			stats.ReconciledCount, stats.TotalRecords)
-	}
-}
-
-func TestGetRequestListPagination(t *testing.T) {
-	r := newTestEngine(t)
-
-	w, resp := doRequest(t, r, http.MethodGet, "/api/v1/audit/requests?offset=0&limit=3", nil)
-	assertSuccess(t, w, resp)
-
-	var page struct {
-		Items interface{} `json:"items"`
-		Total int64       `json:"total"`
-		Page  int         `json:"page"`
-		Size  int         `json:"size"`
-	}
-	decodeData(t, resp, &page)
-
-	if page.Size != 3 {
-		t.Errorf("size = %d, want 3", page.Size)
-	}
-	if page.Page != 1 {
-		t.Errorf("page = %d, want 1", page.Page)
-	}
-	if page.Total <= 0 {
-		t.Errorf("total = %d, want positive", page.Total)
-	}
-}
-
-func TestGetRequestDetail(t *testing.T) {
-	r := newTestEngine(t)
-
-	w, resp := doRequest(t, r, http.MethodGet, "/api/v1/audit/requests/REQ-20260826-0003", nil)
-	assertSuccess(t, w, resp)
-
-	var detail struct {
-		Reconciliation struct {
-			RequestID      string `json:"request_id"`
-			Consistent     bool   `json:"consistent"`
-			AnomalousNodes []int  `json:"anomalous_nodes"`
-		} `json:"reconciliation"`
-	}
-	decodeData(t, resp, &detail)
-
-	if detail.Reconciliation.RequestID != "REQ-20260826-0003" {
-		t.Errorf("request_id = %q", detail.Reconciliation.RequestID)
-	}
-	// 桩实现对含 "0003" 的请求返回不一致，用于演示异常节点标记
-	if detail.Reconciliation.Consistent {
-		t.Error("expected the stub to report an inconsistency for request 0003")
-	}
-	if len(detail.Reconciliation.AnomalousNodes) == 0 {
-		t.Error("expected at least one anomalous node for request 0003")
-	}
-}
-
-// ==================== 策略与权限（/api/v1） ====================
-
-func TestGetActivePolicy(t *testing.T) {
-	r := newTestEngine(t)
-
-	w, resp := doRequest(t, r, http.MethodGet, "/api/v1/policy/active", nil)
-	assertSuccess(t, w, resp)
-
-	var version struct {
-		VersionID   uint64 `json:"version_id"`
-		Description string `json:"description"`
-		Enacted     bool   `json:"enacted"`
-	}
-	decodeData(t, resp, &version)
-
-	if version.VersionID == 0 {
-		t.Error("active policy version_id should be non-zero")
-	}
-	if !version.Enacted {
-		t.Error("active policy should be enacted")
-	}
-}
-
-func TestGetActiveRules(t *testing.T) {
-	r := newTestEngine(t)
-
-	w, resp := doRequest(t, r, http.MethodGet, "/api/v1/policy/rules", nil)
-	assertSuccess(t, w, resp)
-
-	var rules []string
-	decodeData(t, resp, &rules)
-
-	if len(rules) == 0 {
-		t.Fatal("active rule list should not be empty")
-	}
-	for i, rule := range rules {
-		if rule == "" {
-			t.Errorf("rules[%d] is empty", i)
+	for _, endpoint := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/audit/stats"},
+		{http.MethodGet, "/api/v1/audit/requests?offset=0&limit=3"},
+		{http.MethodGet, "/api/v1/audit/requests/REQ-20260826-0003"},
+		{http.MethodGet, "/api/v1/audit/anomalies"},
+		{http.MethodGet, "/api/v1/policy/active"},
+		{http.MethodGet, "/api/v1/policy/rules"},
+		{http.MethodGet, "/api/v1/permission/users/u-other"},
+		{http.MethodPost, "/api/v1/permission/check-access"},
+	} {
+		w, response := doRequest(t, r, endpoint.method, endpoint.path, map[string]interface{}{"user_addr": "u-other", "data_level": 4})
+		assertStatus(t, w, http.StatusForbidden)
+		if response.Code != 403 || len(response.Data) != 0 {
+			t.Errorf("unscoped stub returned data: %+v", response)
 		}
-	}
-}
-
-func TestGetUserPermission(t *testing.T) {
-	r := newTestEngine(t)
-
-	w, resp := doRequest(t, r, http.MethodGet, "/api/v1/permission/users/0xoperator001", nil)
-	assertSuccess(t, w, resp)
-
-	var perm struct {
-		Address        string `json:"address"`
-		Role           int    `json:"role"`
-		MaxAccessLevel int    `json:"max_access_level"`
-		Active         bool   `json:"active"`
-	}
-	decodeData(t, resp, &perm)
-
-	if perm.Address != "0xoperator001" {
-		t.Errorf("address = %q, want echo of the path param", perm.Address)
-	}
-	if !perm.Active {
-		t.Error("stub user should be active")
-	}
-}
-
-func TestCheckAccessRequiresUserAddr(t *testing.T) {
-	r := newTestEngine(t)
-
-	w, _ := doRequest(t, r, http.MethodPost, "/api/v1/permission/check-access", map[string]interface{}{
-		"data_level": 3,
-	})
-	assertStatus(t, w, http.StatusBadRequest)
-}
-
-func TestCheckAccessSuccess(t *testing.T) {
-	r := newTestEngine(t)
-
-	w, resp := doRequest(t, r, http.MethodPost, "/api/v1/permission/check-access", map[string]interface{}{
-		"user_addr":  "0xoperator001",
-		"data_level": 2,
-	})
-	assertSuccess(t, w, resp)
-
-	var result struct {
-		Allowed bool   `json:"allowed"`
-		Reason  string `json:"reason"`
-	}
-	decodeData(t, resp, &result)
-
-	if !result.Allowed {
-		t.Error("stub CheckAccess currently always allows; expected allowed=true")
 	}
 }

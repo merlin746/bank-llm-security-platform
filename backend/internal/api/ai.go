@@ -12,8 +12,6 @@ import (
 	"github.com/chainwise/backend/internal/model"
 )
 
-const aiProxyTimeout = 15 * time.Second
-
 // proxyToAI 将请求转发至 FastAPI AI 服务并回传响应
 func (h *Handler) proxyToAI(c *gin.Context, path string) {
 	body, err := io.ReadAll(c.Request.Body)
@@ -32,7 +30,7 @@ func (h *Handler) proxyToAI(c *gin.Context, path string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: aiProxyTimeout}
+	client := &http.Client{Timeout: time.Duration(h.settings.snapshot().Runtime.AITimeoutMs) * time.Millisecond}
 	resp, err := client.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.Error(502, "AI service unavailable: "+err.Error()))

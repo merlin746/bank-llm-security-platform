@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,10 +30,13 @@ import (
 // demoUser 是业务后台用户视图，字段与前端 mock/data.js 的 mockUsers() 保持一致。
 // 注意：响应中永远不返回密码字段。
 type demoUser struct {
-	ID        int    `json:"id"`
-	Username  string `json:"username"`
-	Role      string `json:"role"`
-	DataLevel string `json:"dataLevel"`
+	ID          int          `json:"id"`
+	Username    string       `json:"username"`
+	Role        string       `json:"role"`
+	DataLevel   string       `json:"dataLevel"`
+	Department  string       `json:"department"`
+	Permissions []string     `json:"permissions"`
+	Scope       accountScope `json:"scope"`
 
 	// password 仅内部保存，不参与 JSON 序列化。
 	password string
@@ -44,14 +48,16 @@ type demoUser struct {
 //	DataLevel: PUBLIC / INTERNAL / CONFIDENTIAL / SECRET / TOP_SECRET
 //
 // 业务侧使用中文角色名与 L1-L4 密级标识（与前端展示、mock 数据一致）。
-var demoRoles = []string{"管理员", "风控审核员", "普通柜员", "客服坐席"}
+var demoRoles = []string{roleTeller, roleReviewer, roleAuditor, roleAdmin}
+
+var demoUsernamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z_-]*$`)
 
 // roleRank 给出各角色可访问的最高密级序号，用于校验「角色-密级」搭配是否合理。
 var roleRank = map[string]int{
-	"管理员":   4,
-	"风控审核员": 3,
-	"普通柜员":  2,
-	"客服坐席":  2,
+	roleTeller:   4,
+	roleReviewer: 4,
+	roleAuditor:  4,
+	roleAdmin:    4,
 }
 
 // dataLevelMeta 描述四级数据密级，字段与前端 mockDataLevels() 一致。
@@ -88,11 +94,33 @@ func (s *userStore) reset() {
 	defer s.mu.Unlock()
 
 	s.users = []*demoUser{
-		{ID: 1, Username: "admin", Role: "管理员", DataLevel: "L4", password: "admin"},
-		{ID: 2, Username: "risk_01", Role: "风控审核员", DataLevel: "L3", password: "risk_01"},
-		{ID: 3, Username: "teller_01", Role: "普通柜员", DataLevel: "L2", password: "teller_01"},
+		{ID: 1, Username: "admin", Role: roleAdmin, DataLevel: "L4", password: "admin"},
+		{ID: 2, Username: "reviewer", Role: roleReviewer, DataLevel: "L3", password: "reviewer"},
+		{ID: 3, Username: "teller", Role: roleTeller, DataLevel: "L1", password: "teller"},
+		{ID: 4, Username: "auditor", Role: roleAuditor, DataLevel: "L2", password: "auditor"},
 	}
-	s.nextID = 4
+	for _, user := range s.users {
+		user.Department = defaultDepartment(user.Role)
+		user.Scope = defaultScope(user.Role)
+	}
+	s.nextID = 5
+}
+
+// Copy the public view while holding the store lock, so responses and login
+// never read a mutable stored user after releasing the lock.
+func userSnapshot(u *demoUser) *demoUser {
+	return publicIdentity(u)
+}
+
+func (s *userStore) authenticate(username, password string) (*demoUser, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, u := range s.users {
+		if u.Username == username && u.password == password {
+			return userSnapshot(u), true
+		}
+	}
+	return nil, false
 }
 
 func (s *userStore) list() []*demoUser {
@@ -100,7 +128,9 @@ func (s *userStore) list() []*demoUser {
 	defer s.mu.RUnlock()
 
 	out := make([]*demoUser, len(s.users))
-	copy(out, s.users)
+	for i, u := range s.users {
+		out[i] = userSnapshot(u)
+	}
 	return out
 }
 
@@ -110,7 +140,7 @@ func (s *userStore) find(id int) (*demoUser, bool) {
 
 	for _, u := range s.users {
 		if u.ID == id {
-			return u, true
+			return userSnapshot(u), true
 		}
 	}
 	return nil, false
@@ -128,20 +158,21 @@ func (s *userStore) existsByName(username string) bool {
 	return false
 }
 
-func (s *userStore) create(username, role, dataLevel, password string) *demoUser {
+func (s *userStore) create(username, role, dataLevel, password, department string, scope accountScope) *demoUser {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	u := &demoUser{
-		ID:        s.nextID,
-		Username:  username,
-		Role:      role,
-		DataLevel: dataLevel,
-		password:  password,
+		ID:         s.nextID,
+		Username:   username,
+		Role:       role,
+		DataLevel:  dataLevel,
+		password:   password,
+		Department: department, Scope: scope,
 	}
 	s.nextID++
 	s.users = append(s.users, u)
-	return u
+	return userSnapshot(u)
 }
 
 func (s *userStore) update(id int, role, dataLevel string) (*demoUser, bool) {
@@ -152,14 +183,65 @@ func (s *userStore) update(id int, role, dataLevel string) (*demoUser, bool) {
 		if u.ID == id {
 			if role != "" {
 				u.Role = role
+				u.Scope = scopeFor(role, u.Department)
 			}
 			if dataLevel != "" {
 				u.DataLevel = dataLevel
 			}
-			return u, true
+			return userSnapshot(u), true
 		}
 	}
 	return nil, false
+}
+
+func (s *userStore) updateAuthorization(id int, role, level, department string, scope accountScope) (*demoUser, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, user := range s.users {
+		if user.ID == id {
+			user.Role, user.DataLevel, user.Department, user.Scope = role, level, department, scope
+			return userSnapshot(user), true
+		}
+	}
+	return nil, false
+}
+
+func validateAccountScope(role, department string, requested *accountScope) (accountScope, string) {
+	allowed := scopeFor(role, department)
+	if role == roleAdmin {
+		if requested != nil && (len(requested.Departments) > 0 || requested.OwnerOnly) {
+			return allowed, "系统管理员不能配置客户数据范围"
+		}
+		return allowed, ""
+	}
+	if department != "零售业务部" && department != "信贷业务部" {
+		return allowed, "所属部门须为零售业务部或信贷业务部"
+	}
+	if requested == nil {
+		return allowed, ""
+	}
+	if role == roleTeller && !requested.OwnerOnly {
+		return allowed, "柜员／客服只能查看本人业务"
+	}
+	result := accountScope{Departments: []string{}, OwnerOnly: requested.OwnerOnly}
+	seen := map[string]bool{}
+	for _, department := range requested.Departments {
+		valid := false
+		for _, candidate := range allowed.Departments {
+			if department == candidate {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return allowed, "授权部门超出该职责允许的范围"
+		}
+		if !seen[department] {
+			result.Departments = append(result.Departments, department)
+			seen[department] = true
+		}
+	}
+	return result, ""
 }
 
 func (s *userStore) delete(id int) bool {
@@ -229,10 +311,12 @@ func (h *Handler) DemoGetUser(c *gin.Context) {
 // POST /api/users  请求体: { username, role, dataLevel, password? }
 func (h *Handler) DemoCreateUser(c *gin.Context) {
 	var req struct {
-		Username  string `json:"username"`
-		Role      string `json:"role"`
-		DataLevel string `json:"dataLevel"`
-		Password  string `json:"password"`
+		Username   string        `json:"username"`
+		Role       string        `json:"role"`
+		DataLevel  string        `json:"dataLevel"`
+		Password   string        `json:"password"`
+		Department string        `json:"department"`
+		Scope      *accountScope `json:"scope"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.Error(400, "invalid request body"))
@@ -244,6 +328,14 @@ func (h *Handler) DemoCreateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.Error(400, "username is required"))
 		return
 	}
+	if !demoUsernamePattern.MatchString(req.Username) {
+		c.JSON(http.StatusBadRequest, model.Error(400, "账号须使用英文名称，可包含下划线或连字符"))
+		return
+	}
+	if strings.TrimSpace(req.Password) == "" {
+		c.JSON(http.StatusBadRequest, model.Error(400, "请设置登录密码"))
+		return
+	}
 	if !isValidRole(req.Role) {
 		c.JSON(http.StatusBadRequest, model.Error(400, "invalid role: "+req.Role))
 		return
@@ -252,10 +344,15 @@ func (h *Handler) DemoCreateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.Error(400, "invalid dataLevel: "+req.DataLevel))
 		return
 	}
-	// 角色与密级必须匹配：不允许给低权限角色分配超高密级
-	if roleRank[req.Role] < levelRank(req.DataLevel) {
-		c.JSON(http.StatusBadRequest, model.Error(400,
-			"dataLevel exceeds the clearance of role "+req.Role))
+	if req.Department == "" {
+		req.Department = defaultDepartment(req.Role)
+	}
+	if req.Role == roleAdmin {
+		req.Department = defaultDepartment(roleAdmin)
+	}
+	scope, scopeError := validateAccountScope(req.Role, req.Department, req.Scope)
+	if scopeError != "" {
+		c.JSON(http.StatusBadRequest, model.Error(400, scopeError))
 		return
 	}
 	if demoUsers.existsByName(req.Username) {
@@ -264,7 +361,7 @@ func (h *Handler) DemoCreateUser(c *gin.Context) {
 	}
 
 	// TODO(contract): 接入 FISCO BCOS Go-SDK 后改为调用 AccessControl.registerUser
-	u := demoUsers.create(req.Username, req.Role, req.DataLevel, req.Password)
+	u := demoUsers.create(req.Username, req.Role, req.DataLevel, req.Password, req.Department, scope)
 	c.JSON(http.StatusCreated, model.Success(u))
 }
 
@@ -277,15 +374,17 @@ func (h *Handler) DemoUpdateUser(c *gin.Context) {
 	}
 
 	var req struct {
-		Role      string `json:"role"`
-		DataLevel string `json:"dataLevel"`
+		Role       string        `json:"role"`
+		DataLevel  string        `json:"dataLevel"`
+		Department string        `json:"department"`
+		Scope      *accountScope `json:"scope"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.Error(400, "invalid request body"))
 		return
 	}
 
-	if req.Role == "" && req.DataLevel == "" {
+	if req.Role == "" && req.DataLevel == "" && req.Department == "" && req.Scope == nil {
 		c.JSON(http.StatusBadRequest, model.Error(400, "role or dataLevel is required"))
 		return
 	}
@@ -297,13 +396,17 @@ func (h *Handler) DemoUpdateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.Error(400, "invalid dataLevel: "+req.DataLevel))
 		return
 	}
-	if !demoUsers.existsByID(id) {
+	current, found := demoUsers.find(id)
+	if !found {
 		c.JSON(http.StatusNotFound, model.Error(404, "user not found"))
+		return
+	}
+	if current.Username == "admin" {
+		c.JSON(http.StatusForbidden, model.Error(403, "内置系统管理员的职责与客户密级不可变更"))
 		return
 	}
 
 	// 校验更新后的角色-密级组合仍然合法
-	current, _ := demoUsers.find(id)
 	newRole := req.Role
 	if newRole == "" {
 		newRole = current.Role
@@ -312,14 +415,29 @@ func (h *Handler) DemoUpdateUser(c *gin.Context) {
 	if newLevel == "" {
 		newLevel = current.DataLevel
 	}
-	if roleRank[newRole] < levelRank(newLevel) {
-		c.JSON(http.StatusBadRequest, model.Error(400,
-			"dataLevel exceeds the clearance of role "+newRole))
+	newDepartment := req.Department
+	if newDepartment == "" {
+		newDepartment = current.Department
+	}
+	if newRole == roleAdmin {
+		newDepartment = defaultDepartment(roleAdmin)
+	}
+	requestedScope := req.Scope
+	if requestedScope == nil && newRole == current.Role && newDepartment == current.Department {
+		requestedScope = &current.Scope
+	}
+	scope, scopeError := validateAccountScope(newRole, newDepartment, requestedScope)
+	if scopeError != "" {
+		c.JSON(http.StatusBadRequest, model.Error(400, scopeError))
 		return
 	}
 
 	// TODO(contract): 接入后改为调用 updateRole / updateAccessLevel
-	u, _ := demoUsers.update(id, req.Role, req.DataLevel)
+	u, found := demoUsers.updateAuthorization(id, newRole, newLevel, newDepartment, scope)
+	if !found {
+		c.JSON(http.StatusNotFound, model.Error(404, "user not found"))
+		return
+	}
 	c.JSON(http.StatusOK, model.Success(u))
 }
 
@@ -349,18 +467,20 @@ func (h *Handler) DemoDeleteUser(c *gin.Context) {
 // GET /api/roles
 func (h *Handler) DemoListRoles(c *gin.Context) {
 	type roleItem struct {
-		Name             string `json:"name"`
-		MaxAccessLevel   string `json:"maxAccessLevel"`
-		ChainRoleOrdinal int    `json:"chainRoleOrdinal"`
+		Name             string       `json:"name"`
+		MaxAccessLevel   string       `json:"maxAccessLevel"`
+		ChainRoleOrdinal int          `json:"chainRoleOrdinal"`
+		Permissions      []string     `json:"permissions"`
+		Scope            accountScope `json:"scope"`
 	}
 
 	// 角色名与链上枚举序号的对应关系：
 	// NONE=0, AUDITOR=1, OPERATOR=2, MANAGER=3, ADMIN=4
 	ordinal := map[string]int{
-		"客服坐席":  2, // OPERATOR
-		"普通柜员":  2, // OPERATOR
-		"风控审核员": 3, // MANAGER
-		"管理员":   4, // ADMIN
+		roleAuditor:  1, // AUDITOR
+		roleTeller:   2, // OPERATOR
+		roleReviewer: 3, // MANAGER
+		roleAdmin:    4, // ADMIN (customer read is a separate permission)
 	}
 
 	items := make([]roleItem, 0, len(demoRoles))
@@ -369,6 +489,8 @@ func (h *Handler) DemoListRoles(c *gin.Context) {
 			Name:             r,
 			MaxAccessLevel:   "L" + strconv.Itoa(roleRank[r]),
 			ChainRoleOrdinal: ordinal[r],
+			Permissions:      append([]string{}, rolePermissions[r]...),
+			Scope:            defaultScope(r),
 		})
 	}
 	c.JSON(http.StatusOK, model.Success(items))
@@ -390,10 +512,4 @@ func levelRank(level string) int {
 		}
 	}
 	return 0
-}
-
-// existsByID 判断用户是否存在（供校验阶段使用）。
-func (s *userStore) existsByID(id int) bool {
-	_, found := s.find(id)
-	return found
 }

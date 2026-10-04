@@ -15,6 +15,9 @@ type Handler struct {
 	reconClient      *contract.NodeReconciliationClient
 	mqClient         *mq.MQClient
 	aiBaseURL        string
+	demoAudit        *demoAuditStore
+	sessions         *sessionStore
+	settings         *demoSettingsStore
 }
 
 func NewHandler(
@@ -32,67 +35,58 @@ func NewHandler(
 		reconClient:      reconClient,
 		mqClient:         mqClient,
 		aiBaseURL:        aiBaseURL,
+		demoAudit:        newDemoAuditStore(),
+		sessions:         newSessionStore(),
+		settings:         newDemoSettingsStore(),
 	}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	r.Use(h.protectAPI)
+	r.POST("/api/auth/login", h.DemoLogin)
+	r.GET("/api/auth/me", h.DemoCurrentUser)
+	r.POST("/api/auth/logout", h.DemoLogout)
 	api := r.Group("/api/v1")
-	{
-		// 健康检查
-		api.GET("/health", h.Health)
+	api.GET("/health", h.Health)
+	// Contract stubs have no verified customer scope, so they fail closed.
+	api.GET("/audit/stats", denyUnscopedChainData)
+	api.GET("/audit/requests", denyUnscopedChainData)
+	api.GET("/audit/requests/:requestId", denyUnscopedChainData)
+	api.GET("/audit/anomalies", denyUnscopedChainData)
+	api.GET("/permission/users/:address", denyUnscopedChainData)
+	api.POST("/permission/check-access", denyUnscopedChainData)
+	api.GET("/policy/active", denyUnscopedChainData)
+	api.GET("/policy/rules", denyUnscopedChainData)
+	ai := api.Group("/ai", h.requireGatewayEnabled)
+	ai.POST("/prompt/detect", h.AIDetectPrompt)
+	ai.POST("/output/desensitize", h.AIDesensitize)
+	ai.POST("/risk/score", h.AIRiskScore)
 
-		// 审计溯源
-		audit := api.Group("/audit")
-		{
-			audit.GET("/stats", h.GetAnomalyStats)
-			audit.GET("/requests", h.GetRequestList)
-			audit.GET("/requests/:requestId", h.GetRequestDetail)
-			audit.GET("/anomalies", h.GetRecentAnomalies)
-		}
-
-		// 权限管理
-		perm := api.Group("/permission")
-		{
-			perm.GET("/users/:address", h.GetUserPermission)
-			perm.POST("/check-access", h.CheckAccess)
-		}
-
-		// 策略管理
-		policy := api.Group("/policy")
-		{
-			policy.GET("/active", h.GetActivePolicy)
-			policy.GET("/rules", h.GetActiveRules)
-		}
-
-		// AI 服务代理（转发 FastAPI 微服务）
-		ai := api.Group("/ai")
-		{
-			ai.POST("/prompt/detect", h.AIDetectPrompt)
-			ai.POST("/output/desensitize", h.AIDesensitize)
-			ai.POST("/risk/score", h.AIRiskScore)
-		}
-	}
-
-	// 成员2前端联调路由（vite proxy 传入 /api/... 前缀）
 	bridge := r.Group("/api")
-	{
-		bridge.POST("/auth/login", h.DemoLogin)
-		bridge.POST("/gateway/attack-test", h.DemoAttackTest)
-		bridge.POST("/gateway/access-test", h.DemoAccessTest)
-		bridge.GET("/stats/overview", h.DemoStatsOverview)
-		bridge.GET("/stats/trend", h.DemoStatsTrend)
-		bridge.GET("/stats/risk-distribution", h.DemoStatsRiskDistribution)
-		bridge.GET("/stats/high-risk-users", h.DemoStatsHighRiskUsers)
-		bridge.GET("/audit/topology", h.DemoAuditTopology)
-		bridge.GET("/audit/alerts", h.DemoAuditAlerts)
-
-		// 业务后台 CRUD：用户 / 角色 / 数据分级（契约见 frontend/src/api/admin.js）
-		bridge.GET("/users", h.DemoListUsers)
-		bridge.POST("/users", h.DemoCreateUser)
-		bridge.GET("/users/:id", h.DemoGetUser)
-		bridge.PUT("/users/:id", h.DemoUpdateUser)
-		bridge.DELETE("/users/:id", h.DemoDeleteUser)
-		bridge.GET("/roles", h.DemoListRoles)
-		bridge.GET("/data-levels", h.DemoListDataLevels)
-	}
+	gateway := bridge.Group("/gateway", h.requireGatewayEnabled)
+	gateway.POST("/attack-test", h.DemoAttackTest)
+	gateway.POST("/access-test", h.DemoAccessTest)
+	bridge.GET("/business/requests", h.DemoBusinessRequests)
+	bridge.POST("/business/requests", h.DemoBusinessSubmit)
+	bridge.GET("/business/requests/:requestId", h.DemoBusinessRequestDetail)
+	bridge.GET("/workspace/requests", h.DemoWorkspaceRequests)
+	bridge.GET("/stats/overview", h.DemoStatsOverview)
+	bridge.GET("/stats/trend", h.DemoStatsTrend)
+	bridge.GET("/stats/risk-distribution", h.DemoStatsRiskDistribution)
+	bridge.GET("/stats/high-risk-users", h.DemoStatsHighRiskUsers)
+	bridge.GET("/audit/topology", h.DemoAuditTopology)
+	bridge.GET("/audit/alerts", h.DemoAuditAlerts)
+	bridge.GET("/audit/alerts/:id", h.DemoAuditAlertDetail)
+	bridge.GET("/audit/requests", h.DemoAuditRequests)
+	bridge.GET("/audit/requests/:requestId", h.DemoAuditRequestDetail)
+	bridge.POST("/risk/reviews", h.DemoRiskReview)
+	bridge.GET("/users", h.DemoListUsers)
+	bridge.POST("/users", h.DemoCreateUser)
+	bridge.GET("/users/:id", h.DemoGetUser)
+	bridge.PUT("/users/:id", h.DemoUpdateUser)
+	bridge.DELETE("/users/:id", h.DemoDeleteUser)
+	bridge.GET("/roles", h.DemoListRoles)
+	bridge.GET("/data-levels", h.DemoListDataLevels)
+	bridge.GET("/system/settings", h.DemoGetSettings)
+	bridge.PUT("/system/settings", h.DemoUpdateSettings)
 }

@@ -82,11 +82,16 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ```json
 {
   "is_attack": true,
-  "confidence": 0.98,
-  "reason": "命中规则: ...",
-  "layer": "rule"
+  "confidence": 1.0,
+  "reason": "命中规则：覆盖已有指令",
+  "layer": "rule",
+  "detection_mode": "rules",
+  "degraded": true,
+  "degradation_reason": "深度学习依赖未安装或不可用，本次仅执行规则检测"
 }
 ```
+
+`detection_mode` 表示本次实际采用的检测方式（`rules` / `model`）；`degraded` 表示语义模型本次不可用。模型依赖缺失、权重缺失、加载失败或推理失败时均返回具体的 `degradation_reason`，即使规则已经命中攻击也会保留该提示。模型可用且规则提前命中时，`detection_mode` 为 `rules`，`degraded` 为 `false`。仅规则未命中时，`confidence` 为 `0.0`，不代表经过语义模型确认安全。
 
 ### POST /api/output/desensitize
 
@@ -141,6 +146,12 @@ python test_api.py
 ```
 
 三个接口均应返回 HTTP 200 及对应 JSON。
+
+无需模型权重的中文样本和 API 降级响应回归测试：
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## 常见问题
 

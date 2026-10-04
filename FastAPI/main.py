@@ -1,7 +1,7 @@
 # main.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Literal
 import uvicorn
 
 from app.models.prompt_detector import PromptDetector
@@ -24,6 +24,9 @@ class PromptDetectResponse(BaseModel):
     confidence: float
     reason: str
     layer: str
+    detection_mode: Literal["rules", "model"]
+    degraded: bool
+    degradation_reason: str
 
 class DesensitizeRequest(BaseModel):
     text: str
